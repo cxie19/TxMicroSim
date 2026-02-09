@@ -25,7 +25,7 @@ ui <- fluidPage(
   theme = "bootstrap.css",
   shinyjs::useShinyjs(),
   withMathJax(),
-  titlePanel("Toolkit for Simulating Disease Progression and Treatment Decision-Making"),
+  titlePanel("Toolkit for Multistate Disease Progression Simulation and Treatment Decision-Making Aid"),
   
   # Custom box style 
   tags$head(
@@ -1234,9 +1234,13 @@ server <- function(input, output, session){
             theme(
               axis.title.x = element_blank(),
               axis.title.y = element_blank(),
-              axis.text.y = element_text(size = 14),
+              axis.text.x  = element_text(size = 14),  
+              axis.text.y = element_text(size = 14),   
               axis.ticks.y = element_blank()
+            )+ theme(
+              plot.margin = margin(t = 5.5, r = 25, b = 5.5, l = 5.5)  # increase r
             )
+          
         })
       })
     }
@@ -1849,9 +1853,8 @@ server <- function(input, output, session){
             selectInput(
               inputId = paste0("covval_shared_", cov),
               label = label,
-              choices = if (length(start_states) > 0) start_states else "None",
-              selected = sharedCovValues()[[cov]] %||%
-                if (length(start_states) > 0) start_states[1] else "None"
+              choices = start_states,
+              selected = start_states[1] 
             )
           } else {
             numericInput(
@@ -2216,10 +2219,12 @@ server <- function(input, output, session){
     prior_intervention_state <- edges()[tr_active,"from"]
     intervention_state <- edges()[tr_active,"to"]
     tryCatch({
+      set.seed(1)
       sim_yes <- gen_trans_time(paramsurv_list=transmod_params_yes, trans_mat= tm(), sim_data = sim_data, 
                                 start_state=start_state_num, 
                                 prior_intervention_state=state_map[[prior_intervention_state]],intervention_state=state_map[[intervention_state]],
                                 thor=input$rmst_time, n_sample=input$num_sample_microsim, model=input$baseline_hazard)
+      set.seed(2)
       sim_no <- gen_trans_time(paramsurv_list=transmod_params_no, trans_mat= tm(), sim_data = sim_data, 
                                start_state=start_state_num, 
                                prior_intervention_state=state_map[[prior_intervention_state]],intervention_state=state_map[[intervention_state]],
@@ -2260,13 +2265,17 @@ server <- function(input, output, session){
              aes(x = strategy, y = mean_rmst, fill = strategy)) +
         geom_col(width = 0.6) +
         geom_text(aes(label = number(mean_rmst, accuracy = 0.01)),
-                  vjust = -0.5, size = 4) +     # move text above bars
+                  vjust = -0.5, size = 5) +     # move text above bars
         theme_minimal(base_size = 14) +
         labs(
-          title = paste("RMST: Transition", tr_active),
+          title = paste("At state", edges()[tr_active,"from"]),
           x = NULL, y = "Restricted Mean Survival Time", fill = ""
         ) +
-        theme(legend.position = "none") +
+        theme(legend.position = "none",
+              axis.text.x  = element_text(size = 16),  
+              axis.text.y = element_text(size = 16),
+              axis.title.y = element_text(size = 16)
+              ) +
         scale_y_continuous(
           limits = c(0, input$rmst_time),
           expand = expansion(mult = c(0, 0.05))  # extra headroom for labels
