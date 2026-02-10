@@ -61,7 +61,7 @@ ui <- fluidPage(
       h5(HTML("In the section of Multistate Structure,you need to <br/>
       (1) define the number of states and the state names in the multistate model,<br/>
       (2) specify all possible transitions, and<br/>
-      (3) mark which transitions are affected by interventions.<br/>
+      (3) mark which transitions are affected by treatments.<br/>
               The diagram and transition matrix of the multistate model as the output will update automatically based on your selections.")),
       navlistPanel(
         
@@ -90,7 +90,7 @@ ui <- fluidPage(
                    column(
                      width = 4,
                      div(class = "box input-box",
-                         h4("Select transitions which are affected by the intervention"),
+                         h4("Select transitions which are affected by the treatment"),
                          uiOutput("interventionTransitionsUI")
                      )
                    )
@@ -109,7 +109,7 @@ ui <- fluidPage(
                          h4("Diagram of the multistate model"),
                          visNetworkOutput("transitionDiagram", height = "560px", width = "100%"),
                          div(class = "muted",
-                             tags$em("Note: Blue edges represent normal transitions; black edges indicate intervention transitions.")
+                             tags$em("Note: Blue edges represent normal transitions; black edges indicate treatment transitions.")
                         )
                      )
                    ),
@@ -137,7 +137,7 @@ ui <- fluidPage(
         h4("Multistate Modeling"),
         tags$p("In this section, we build the multistate model using flexible 
           parametric proportional hazards survival models 
-          (Royston–Parmar models) for transitions not affected by the intervention."),
+          (Royston–Parmar models) for transitions not affected by the treatment."),
         tags$p("You can upload your dataset in the required format. If you do not have a real dataset, you can input the estimation 
           results of the multistate model manually. Plots of baseline hazard functions and hazard ratios are also presented.")
       ),
@@ -208,9 +208,9 @@ ui <- fluidPage(
                  conditionalPanel(
                    condition = "input.has_data == 'yes' || input.has_data == 'no'",
                    conditionalPanel(condition="input.has_data=='yes'",
-                                    h4("Given the uploaded dataset, define covariates for transitions not affected by the intervention")),
+                                    h4("Given the uploaded dataset, define covariates for transitions not affected by the treatment")),
                    conditionalPanel(condition="input.has_data=='no'",
-                                    h4("Define covariates for transitions not affected by the intervention")),
+                                    h4("Define covariates for transitions not affected by the treatment")),
                    uiOutput("covariateBlocks")
                  )
         ),
@@ -219,7 +219,7 @@ ui <- fluidPage(
                  id="model_spec",
                  conditionalPanel(
                    condition = "input.has_data == 'yes' || input.has_data == 'no'",
-                   h4("The flexible parametric proportional hazards models are fitted for all transitions not affected by the intervention."),
+                   h4("The flexible parametric proportional hazards models are fitted for all transitions not affected by the treatment."),
                    
                    radioButtons(
                      inputId = "baseline_hazard",
@@ -329,9 +329,9 @@ ui <- fluidPage(
       )
     ),
 
-    # ---- Tab 3: Intervention Strategies ----
+    # ---- Tab 3: Treatment Strategies ----
     tabPanel(
-      "Intervention Strategies",
+      "Treatment Strategies",
       h4("Predict the restricted mean survival times (RMSTs) under different treatment strategies for a patient with given covariate values using the microsimulation method."),
       tagList(
         fluidRow(
@@ -565,8 +565,8 @@ server <- function(input, output, session){
   states <- reactive(rv1$stateNames()) # state names, e.g., CP, AP, BP, HSCT, and Death
   tm     <- reactive(rv1$transitionMatrix()) # transition matrix
   edges <- reactive(rv1$transitionEdges()) # a dataframe with columns from, to, and label (1,2,3,..)
-  tx_trans <- reactive(rv1$interventionSel()) # the sequence number for the transition affected by the intervention
-  non_tx_trans <- reactive(setdiff(edges()$label,tx_trans())) # the sequence number for the transition not affected by the intervention
+  tx_trans <- reactive(rv1$interventionSel()) # the sequence number for the transition affected by the treatment
+  non_tx_trans <- reactive(setdiff(edges()$label,tx_trans())) # the sequence number for the transition not affected by the treatment
   tr_labels <- reactive(setNames(   # transition labels
     paste0(edges()$label, ": ", edges()$from, " → ", edges()$to),
     edges()$label
@@ -984,7 +984,7 @@ server <- function(input, output, session){
         
         tagList( 
           div(style="margin-top:10px; font-style: italic; color:#555;",
-              "All transitions not affected by the intervention have been assigned with covariate sets."
+              "All transitions not affected by the treatment have been assigned with covariate sets."
           ),
           br(),
           h5("Please provide a description for each covariate."),
@@ -1671,7 +1671,7 @@ server <- function(input, output, session){
       style = "text-align:right; margin-top:30px;",
       actionButton(
         "goToMicrosimulation",
-        "Next: Intervention Strategies",
+        "Next: Treatment Strategies",
         class = "btn btn-primary"
       )
     )
@@ -1751,23 +1751,23 @@ server <- function(input, output, session){
     updateNavlistPanel(
       session,
       inputId = "tabs",   # the id of your tabsetPanel/navlistPanel
-      selected = "Intervention Strategies"
+      selected = "Treatment Strategies"
     )
   })
   
   
-  # ---- Tab 3: Intervention Strategies tab ----
+  # ---- Tab 3: Treatment Strategies tab ----
   rv3 <- reactiveValues()
   rv3$covLabelsRV <- reactiveVal(NULL)
   sharedCovValues <- reactiveVal(list())  # numeric values of shared covariates
-  interventionCovValuesRV <- reactiveVal(list()) # Store covariate values (shared + transition-specific) for each intervention transition
+  interventionCovValuesRV <- reactiveVal(list()) # Store covariate values (shared + transition-specific) for each treatment transition
   
   output$interventionStrategiesUI <- renderUI({
     req(input$goToMicrosimulation)
     
     #  Basic checks
     if (length(tx_trans()) == 0)
-      return(h5("No intervention transitions defined yet."))
+      return(h5("No treatment transitions defined yet."))
     if (length(savedCovs()) == 0)
       return(h5("No covariates defined yet. Please fit the model first."))
     
@@ -1781,7 +1781,7 @@ server <- function(input, output, session){
       } else if (cov == "StartState") {
         "Initial state of the microsimulation"
       } else if (cov == "Tstart") {
-        "Intervention start time since prior state"
+        "Treatment start time since prior state"
       } else {
         cov
       }
@@ -1792,9 +1792,9 @@ server <- function(input, output, session){
     choices_named <- setNames(as.list(covariates), cov_labels)
     
     tagList(
-      h4("Input the values for the covariates for each intervention transition. Plot the bar plots for intervention (yes vs no) at the transitions."),
+      h4("Input the values for the covariates for each treatment transition. Plot the bar plots for treatment (yes vs no) at the transitions."),
       h4("Step 1: Choose Shared Covariates"),
-      helpText("Select the covariates that have the same values across all intervention transitions."),
+      helpText("Select the covariates that have the same values across all treatment transitions."),
       checkboxGroupInput(
         inputId = "shared_covs",
         label = NULL,
@@ -1802,8 +1802,8 @@ server <- function(input, output, session){
       ),
       uiOutput("covariateValueInputs"),
       tags$hr(),
-      h4("Step 2: Define Covariate Values for Each Intervention Transition"),
-      helpText("For non-shared covariates, specify their values for each intervention transition."),
+      h4("Step 2: Define Covariate Values for Each Treatment Transition"),
+      helpText("For non-shared covariates, specify their values for each treatment transition."),
       uiOutput("transitionCovariateInputs"),
       br(),
       div(
@@ -1985,7 +1985,7 @@ server <- function(input, output, session){
     interventionCovValuesRV(vals_existing)
   }
   
-  # Create a dynamic observer for each intervention transition button
+  # Create a dynamic observer for each treatment transition button
   observe({
     for (tr in tx_trans()) {
       local({
@@ -2012,18 +2012,18 @@ server <- function(input, output, session){
     cov_values_all <- interventionCovValuesRV()
     surv_lists_all <- list()
     
-    cat("\n==== Building params_surv_list for each intervention transition ====\n")
+    cat("\n==== Building params_surv_list for each treatment transition ====\n")
     
-    # Loop over each intervention transition as "active"
+    # Loop over each treatment transition as "active"
     for (tr_active in tx_trans()) {
-      cat("\n--- Active intervention transition:", tr_active, "---\n")
+      cat("\n--- Active treatment transition:", tr_active, "---\n")
       surv_list <- list()
       
       for (tr in edges()$label){
         hr_sub <- subset(all_HRs_df, transition == tr)
-        # ---------- Non-intervention transitions ----------
+        # ---------- Non-treatment transitions ----------
         if (tr %in% non_tx_trans()) {
-          cat("Processing non-intervention:", tr, "\n")
+          cat("Processing non-treatment:", tr, "\n")
           if(input$has_data=="yes"){
             req(fittedModelsRV())
             fits <- fittedModelsRV()
@@ -2119,7 +2119,7 @@ server <- function(input, output, session){
             )
           }
           
-        }else if (tr %in% tx_trans()) { #  Intervention transitions 
+        }else if (tr %in% tx_trans()) { #  treatment transitions 
           cov_vals <- cov_values_all[[tr]] %||% list()
           
           # Assign Tstart logic
@@ -2145,11 +2145,11 @@ server <- function(input, output, session){
     }
     
     # Add one more scenario: all Tstart = 1e10 
-    cat("\n--- Building 'all-inactive' intervention scenario ---\n")
+    cat("\n--- Building 'all-inactive' treatment scenario ---\n")
     surv_list_all_inactive <- list()
     for (tr in edges()$label) {
       if (tr %in% non_tx_trans()) {
-        # reuse first non-intervention structure if exists
+        # reuse first non-treatment structure if exists
         surv_list_all_inactive[[tr]] <- surv_lists_all[[1]][[tr]]
       } else if (tr %in% tx_trans()) {
         coefhsct <- as.matrix(1e10)
@@ -2250,12 +2250,12 @@ server <- function(input, output, session){
       summarise(mean_rmst = mean(total_time), .groups = "drop_last") %>% 
       mutate(
         transition = tr_active,
-        strategy = ifelse(strategy_id == 1, "Yes Intervention", "No Intervention")
+        strategy = ifelse(strategy_id == 1, "Yes", "No")
       )
     
     rmst_summary$strategy <- factor(
       rmst_summary$strategy,
-      levels = c("Yes Intervention", "No Intervention")
+      levels = c("Yes", "No")
     )
     
     # Render plot for this transition only
@@ -2268,7 +2268,7 @@ server <- function(input, output, session){
                   vjust = -0.5, size = 5) +     # move text above bars
         theme_minimal(base_size = 14) +
         labs(
-          title = paste("At state", edges()[tr_active,"from"]),
+          title = paste("Treatment at state", edges()[tr_active,"from"]),
           x = NULL, y = "Restricted Mean Survival Time", fill = ""
         ) +
         theme(legend.position = "none",
@@ -2302,7 +2302,7 @@ server <- function(input, output, session){
   
   observe({
     req(paramsSurvListByInterventionRV())
-    # For each intervention transition, create a separate observer
+    # For each treatment transition, create a separate observer
     lapply(tx_trans(), function(tr_active) {
       observeEvent(input[[paste0("run_tr_", tr_active)]], {
         rv_gate$micro_ready <- TRUE
@@ -2371,7 +2371,7 @@ server <- function(input, output, session){
     updateTabsetPanel(
       session,
       inputId = "tabs",           
-      selected = "Intervention Strategies" 
+      selected = "Treatment Strategies" 
     )
   })
   
