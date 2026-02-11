@@ -61,8 +61,9 @@ ui <- fluidPage(
       h5(HTML("In the section of Multistate Structure,you need to <br/>
       (1) define the number of states and the state names in the multistate model,<br/>
       (2) specify all possible transitions, and<br/>
-      (3) mark which transitions are affected by treatments.<br/>
-              The diagram and transition matrix of the multistate model as the output will update automatically based on your selections.")),
+      (3) mark which transitions are affected by the treatment.<br/>
+              The diagram and transition matrix of the multistate model as the output will update automatically based on your selections.<br/>
+              <b>The treatment considered for treatment stratgy comparsion needs to be included as one of the states.")),
       navlistPanel(
         
         id = "MSMstruc",
