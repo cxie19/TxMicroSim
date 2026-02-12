@@ -58,12 +58,12 @@ ui <- fluidPage(
     # ---- Tab 1: Multistate Structure ----
     tabPanel(
       "Multistate Structure",
-      h5(HTML("In the section of Multistate Structure,you need to <br/>
+      h5(HTML("In the section of Multistate Structure, you need to <br/>
       (1) define the number of states and the state names in the multistate model,<br/>
       (2) specify all possible transitions, and<br/>
       (3) mark which transitions are affected by the treatment.<br/>
               The diagram and transition matrix of the multistate model as the output will update automatically based on your selections.<br/>
-              <b>The treatment considered for treatment stratgy comparsion needs to be included as one of the states.")),
+              The treatment considered for treatment stratgy comparsion needs to be included as one of the states.")),
       navlistPanel(
         
         id = "MSMstruc",
@@ -199,7 +199,7 @@ ui <- fluidPage(
                  conditionalPanel(
                    condition = "input.has_data == 'no'",
                    h5("Please proceed to the next subsection to input values for the model."),
-                   tags$p("You will be asked to define covariate effects and baseline hazard function manually."),
+                   tags$p("You will be asked to define covariate effects and baseline hazard functions manually."),
                    br(),
                    actionButton("goToCovars", "Next: Covariate Assignment", class = "btn btn-primary")
                  )
@@ -572,23 +572,7 @@ server <- function(input, output, session){
     paste0(edges()$label, ": ", edges()$from, " → ", edges()$to),
     edges()$label
   ))
-  
-  observe({
-    
-    cat("rv1$stateNames\n")
-    print(rv1$stateNames())
-    cat("rv1$transitionEdges\n")
-    print(edges())
-    print(rv1$transitionEdges())
-    cat("rv1$interventionSel\n")
-    print(rv1$interventionSel())
-    cat("rv1$transitionMatrix\n")
-    print(rv1$transitionMatrix())
-    cat("tr_labels\n")
-    print(tr_labels())
-  })
-  
-  
+ 
   # ----  Tab 2: Multistate Modeling ---- 
   rv_gate <- reactiveValues(#data_ready = FALSE,
     model_ready = FALSE,
@@ -1004,15 +988,6 @@ server <- function(input, output, session){
       inputId = "multi_fit",   
       selected = "Model Specification"
     )
-  })
-  
-  observe({
-    cat("nBlocks()")
-    print(nBlocks())
-    cat("savedCovs()")
-    print(savedCovs())
-    cat("savedTrns()")
-    print(savedTrns())
   })
   
   # ---- Tab 2-3: Model Specification ----
@@ -1793,6 +1768,7 @@ server <- function(input, output, session){
     choices_named <- setNames(as.list(covariates), cov_labels)
     
     tagList(
+      withMathJax(),  
       h4("Input the values for the covariates for each treatment transition. Plot the bar plots for treatment (yes vs no) at the transitions."),
       h4("Step 1: Choose Shared Covariates"),
       helpText("Select the covariates that have the same values across all treatment transitions."),
@@ -1806,6 +1782,10 @@ server <- function(input, output, session){
       h4("Step 2: Define Covariate Values for Each Treatment Transition"),
       helpText("For non-shared covariates, specify their values for each treatment transition."),
       uiOutput("transitionCovariateInputs"),
+      if (input$has_data=="no"){
+        helpText("One bar
+shows an RMST; an error bar indicates \\(\\pm 1\\) standard deviation truncated at 0 and the prespecified time horizon.")
+      },
       br(),
       div(
         style = "text-align:center;",
@@ -1884,7 +1864,7 @@ server <- function(input, output, session){
     non_shared_covs <- setdiff(unique(c("Tstart", "StartState", covariates)), shared_covs)
     
     if (length(non_shared_covs) == 0) {
-      return(h5("All covariates are shared — no transition-specific inputs needed."))
+      h5("All covariates are shared — no transition-specific inputs needed.")
     }
     
     # Retrieve covariate labels
@@ -2181,8 +2161,6 @@ server <- function(input, output, session){
     
     all_states <- unique(c(edges()$from, edges()$to))
     state_map <- setNames(seq_along(all_states), all_states)
-    cat("state_map")
-    print(state_map)
     
     cat("interventionCovValuesRV()")
     print(interventionCovValuesRV())
@@ -2248,38 +2226,58 @@ server <- function(input, output, session){
     
     rmst_summary <- rmst %>%
       group_by(strategy_id) %>%
-      summarise(mean_rmst = mean(total_time), .groups = "drop_last") %>% 
+      summarise(
+        mean_rmst = mean(total_time, na.rm = TRUE),
+        sd_rmst   = sd(total_time,   na.rm = TRUE),
+        .groups   = "drop"
+      ) %>%
       mutate(
         transition = tr_active,
-        strategy = ifelse(strategy_id == 1, "Yes", "No")
+        strategy   = ifelse(strategy_id == 1, "Yes", "No")
       )
     
-    rmst_summary$strategy <- factor(
-      rmst_summary$strategy,
-      levels = c("Yes", "No")
-    )
+    if (input$has_data=="no"){
+      rmst_summary <- rmst_summary %>%
+        group_by(strategy_id) %>%
+        mutate( # truncated standard deviation bar
+          lb = pmax(0, mean_rmst - sd_rmst),
+          ub = pmin(input$rmst_time, mean_rmst + sd_rmst))
+    }
     
-    # Render plot for this transition only
+    rmst_summary$strategy <- factor(rmst_summary$strategy, levels = c("Yes", "No"))
+    
     output[[paste0("microsimPlot_", tr_active)]] <- renderPlot({
       req(rv_gate$micro_ready)
-      ggplot(rmst_summary,
-             aes(x = strategy, y = mean_rmst, fill = strategy)) +
+      
+      ggplot(rmst_summary, aes(x = strategy, y = mean_rmst, fill = strategy)) +
         geom_col(width = 0.6) +
-        geom_text(aes(label = number(mean_rmst, accuracy = 0.01)),
-                  vjust = -0.5, size = 5) +     # move text above bars
+        geom_errorbar(
+          aes(ymin = lb, ymax = ub),
+          width = 0.15, linewidth = 0.8
+        ) +
+        geom_text(
+          aes(label = number(mean_rmst, accuracy = 0.01)),
+          nudge_x = 0.10,                         
+          nudge_y = 0.02 * input$rmst_time,       
+          hjust = 0, vjust = 0,
+          size = 5
+        ) +
+        coord_cartesian(clip = "off") +
         theme_minimal(base_size = 14) +
         labs(
-          title = paste("Treatment at state", edges()[tr_active,"from"]),
+          title = paste("Treatment at state", edges()[tr_active, "from"]),
           x = NULL, y = "Restricted Mean Survival Time", fill = ""
         ) +
-        theme(legend.position = "none",
-              axis.text.x  = element_text(size = 16),  
-              axis.text.y = element_text(size = 16),
-              axis.title.y = element_text(size = 16)
-              ) +
+        theme(
+          legend.position = "none",
+          axis.text.x  = element_text(size = 16),
+          axis.text.y  = element_text(size = 16),
+          axis.title.y = element_text(size = 16),
+          plot.margin = margin(5.5, 30, 5.5, 5.5)  # extra right margin for labels
+        ) +
         scale_y_continuous(
           limits = c(0, input$rmst_time),
-          expand = expansion(mult = c(0, 0.05))  # extra headroom for labels
+          expand = expansion(mult = c(0, 0.08))
         )
     })
     
