@@ -1,5 +1,6 @@
 library(shiny) # build the shiny app
 library(shinyjs)
+library(shinybusy)
 library(visNetwork) # multistate structure diagram
 library(mstate) # data prep
 library(DT) # show the table with function datatable(data, ...)
@@ -10,6 +11,7 @@ library(scales)  # for plots
 library(hesim)   # use params_surv() to store the fitted models
 library(dplyr)
 library(doParallel)
+library(mvtnorm)
 
 # load all the helper functions
 r_files <- list.files(
@@ -24,6 +26,7 @@ ui <- fluidPage(
   
   theme = "bootstrap.css",
   shinyjs::useShinyjs(),
+  add_busy_spinner(),
   withMathJax(),
   titlePanel("Toolkit for Multistate Disease Progression Simulation and Treatment Decision-Making Aid"),
   
@@ -1451,7 +1454,7 @@ server <- function(input, output, session){
           # Plot
           output[[paste0("piecewise_plot_", tr_local)]] <- renderPlot({
             
-            req(input$baseline_hazard, input$has_data) #rv2$ui_ready, 
+            req(input$baseline_hazard, input$has_data) 
             vals <- pwc_inputs()
             req(vals$cuts, vals$haz)
             
@@ -1471,175 +1474,178 @@ server <- function(input, output, session){
       }
     }
     
-    
     # --- Natural cubic spline ---
     if(input$baseline_hazard == "spline"){
       
       for (tr in non_tx_trans()) {
         
-        log_min <- log(0.1)
-        log_max <- log(xmax_value)
-        
-        if (input$has_data == "no") {
-          default_gammas <- c(-1, 1.5, 0.01)
-          default_knots <- c(log_min, (log_min + log_max) / 2, log_max)
-        }else if (input$has_data == "yes") {
-          best_fit <- fits[[tr]]
-          if (is.null(best_fit)) next
-          default_gammas <- coef(best_fit)[grep("gamma", names(coef(best_fit)))]
-          default_knots  <- best_fit$knots
-        }
-        
-        if (is.null(gamma_counts[[tr]])) gamma_counts[[tr]] <- length(default_gammas)
-        if (is.null(knot_counts[[tr]]))  knot_counts[[tr]]  <- length(default_knots)
-        
-        #  Current counts
-        n_gammas <- gamma_counts[[tr]]
-        n_knots  <- knot_counts[[tr]]
-        
-        # Gamma inputs 
-        gamma_inputs <- tagList(
-          lapply(seq_len(n_gammas), function(i) {
-            id <- paste0("gamma_", tr, "_", i - 1)
-            val <- if (i <= length(default_gammas)) round(default_gammas[i], 3) else 0.01
-            label_text <- if (i == 1) {
-              withMathJax("\\(\\gamma_{0}\\) (intercept)")
-            } else if (i == 2) {
-              withMathJax("\\(\\gamma_{1}\\) (for log(t))")
-            } else {
-              withMathJax(sprintf("\\(\\gamma_{%d}\\) (for knots)", i - 1))
-            }
-            numericInput(id, label = label_text, value = val, step = 0.1, width = "100%")
-          })
-        )
-        
-        K_internal <- max(0, n_knots - 2)
-        internal <- if (K_internal > 0) {
-          log_min + (1:K_internal)/(K_internal + 1) * (log_max - log_min)
-        } else numeric(0)
-        
-        knots_current <- if (input$has_data=="no") c(log_min, internal, log_max) else default_knots
-        
-        # knot inputs 
-        knot_inputs <- tagList(
-          lapply(seq_along(knots_current), function(i) {
-            lbl <- if (i == 1 || i == length(knots_current)) {
-              paste("Knot", i, "(boundary)")
-            } else paste("Knot", i, "(internal)")
-            numericInput(
-              paste0("knot_", tr, "_", i),
-              label = lbl,
-              value = round(knots_current[i], 3),
-              step = 0.1,
-              width = "100%"
-            )
-          })
-        )
-        
-        # The add button 
-        add_btn <- if (input$has_data=="no")
-          actionButton(paste0("add_gamma_knot_", tr),
-                       "Add Gamma & Knot",
-                       class = "btn btn-sm btn-outline-primary")
-        else NULL
-        
-        # Layout
-        ui_list[[length(ui_list) + 1]] <<- fluidRow(
-          column(
-            width = 4,
-            h5(strong(paste("Transition", tr_labels()[tr]))),
-            fluidRow(
-              column(width = 6, h5("Gammas"), gamma_inputs),
-              column(width = 6, h5("Knots"),  knot_inputs)
-            ),
-            if (!is.null(add_btn)) div(style = "margin-top:10px;", add_btn)
-          ),
-          column(width = 8, plotOutput(paste0("spline_plot_", tr), height = "300px")),
-          tags$div(style = "height:30px;")
-        )
-        
-        # Reactive inputs for plotting 
-        gamma_vals_re <- reactive({
-          sapply(0:(n_gammas - 1), function(i)
-            as.numeric(input[[paste0("gamma_", tr, "_", i)]]) %||% NA_real_)
-        })
-        knot_vals_re <- reactive({
-          sapply(1:n_knots, function(i)
-            as.numeric(input[[paste0("knot_", tr, "_", i)]]) %||% NA_real_)
-        })
-        
-        # Plot 
-        output[[paste0("spline_plot_", tr)]] <- renderPlot({
+        local({
+          tr_local <- tr
           
-          req(input$baseline_xmax)
-          times <- seq(0.1, input$baseline_xmax, length.out = 300)
+          log_min <- log(0.1)
+          log_max <- log(xmax_value)
           
-          g <- gamma_vals_re()
-          k <- knot_vals_re()
-          
-          if (is.null(g) || is.null(k) || any(is.na(g)) || any(is.na(k))) return(NULL)
-          if (length(g) < 2 || length(k) < 2) return(NULL)
-          
-          logH <- function(gammas, time, knots) {
-            # Defensive checks
-            if (is.null(knots) || length(knots) < 2) return(NA_real_)
-            knots <- suppressWarnings(as.numeric(knots))
-            if (any(is.na(knots))) return(NA_real_)
-            
-            lowest.knot  <- knots[1]
-            highest.knot <- knots[length(knots)]
-            if (is.na(lowest.knot) || is.na(highest.knot)) return(NA_real_)
-            if (!is.finite(lowest.knot) || !is.finite(highest.knot)) return(NA_real_)
-            if (lowest.knot == highest.knot) return(NA_real_)
-            
-            # Nested cubic-spline basis function, fully guarded
-            bfun <- function(time, knot) {
-              tlog <- suppressWarnings(as.numeric(log(time)))
-              knot  <- suppressWarnings(as.numeric(knot))
-              if (any(is.na(c(tlog, knot, lowest.knot, highest.knot)))) return(NA_real_)
-              if (!is.finite(tlog) || !is.finite(knot)) return(NA_real_)
-              
-              hk <- highest.knot
-              lk <- lowest.knot
-              denom <- hk - lk
-              if (denom == 0 || is.na(denom)) return(NA_real_)
-              
-              t1 <- pmax(0, tlog - knot)^3
-              t2 <- (hk - knot) * pmax(0, tlog - lk)^3 / denom
-              t3 <- (knot - lk) * pmax(0, tlog - hk)^3 / denom
-              
-              as.numeric(t1 - t2 - t3)
-            }
-            
-            # Evaluate basis
-            bvalue <- if (length(knots) > 2) {
-              sapply(knots[2:(length(knots) - 1)], function(x) bfun(time, x))
-            } else numeric(0)
-            
-            # Safe combination
-            if (any(is.na(bvalue))) return(NA_real_)
-            g <- suppressWarnings(as.numeric(gammas))
-            if (any(is.na(g))) return(NA_real_)
-            if (length(g) < 2) return(NA_real_)
-            
-            as.numeric(g %*% c(1, log(time), bvalue))
+          if (input$has_data == "no") {
+            default_gammas <- c(-1, 1.5, 0.01)
+            default_knots <- c(log_min, (log_min + log_max) / 2, log_max)
+          }else if (input$has_data == "yes") {
+            best_fit <- fits[[tr_local]]
+            if (is.null(best_fit)) next
+            default_gammas <- coef(best_fit)[grep("gamma", names(coef(best_fit)))]
+            default_knots  <- best_fit$knots
           }
           
-          logH_values <- suppressWarnings(sapply(times, function(x) logH(g, x, k)))
-          if (any(is.na(logH_values))) return(NULL)
-          H <- exp(logH_values)
-          h <- c(diff(H) / diff(times), NA)
+          if (is.null(gamma_counts[[tr_local]])) gamma_counts[[tr_local]] <- length(default_gammas)
+          if (is.null(knot_counts[[tr_local]]))  knot_counts[[tr_local]]  <- length(default_knots)
           
-          par(mfrow = c(1, 2))
-          plot(times, h, type = "l", lwd = 2, col = "darkblue",
-               xlab = "Time", ylab = "Baseline hazard function",ylim=c(0,ymax_h),
-               main = paste0("Transition ", tr, ": Baseline hazard"))
-          plot(times, H, type = "l", lwd = 2, col = "darkred",
-               xlab = "Time", ylab = "Baseline cumulative hazard",ylim=c(0,ymax_H),
-               main = paste0("Transition ", tr, ": Baseline cumulative hazard"))
-          par(mfrow = c(1, 1))
+          #  Current counts
+          n_gammas <- gamma_counts[[tr_local]]
+          n_knots  <- knot_counts[[tr_local]]
           
-        })
+          # Gamma inputs 
+          gamma_inputs <- tagList(
+            lapply(seq_len(n_gammas), function(i) {
+              id <- paste0("gamma_", tr_local, "_", i - 1)
+              val <- if (i <= length(default_gammas)) round(default_gammas[i], 3) else 0.01
+              label_text <- if (i == 1) {
+                withMathJax("\\(\\gamma_{0}\\) (intercept)")
+              } else if (i == 2) {
+                withMathJax("\\(\\gamma_{1}\\) (for log(t))")
+              } else {
+                withMathJax(sprintf("\\(\\gamma_{%d}\\) (for knots)", i - 1))
+              }
+              numericInput(id, label = label_text, value = val, step = 0.1, width = "100%")
+            })
+          )
+          
+          K_internal <- max(0, n_knots - 2)
+          internal <- if (K_internal > 0) {
+            log_min + (1:K_internal)/(K_internal + 1) * (log_max - log_min)
+          } else numeric(0)
+          
+          knots_current <- if (input$has_data=="no") c(log_min, internal, log_max) else default_knots
+          
+          # knot inputs 
+          knot_inputs <- tagList(
+            lapply(seq_along(knots_current), function(i) {
+              lbl <- if (i == 1 || i == length(knots_current)) {
+                paste("Knot", i, "(boundary)")
+              } else paste("Knot", i, "(internal)")
+              numericInput(
+                paste0("knot_", tr_local, "_", i),
+                label = lbl,
+                value = round(knots_current[i], 3),
+                step = 0.1,
+                width = "100%"
+              )
+            })
+          )
+          
+          # The add button 
+          add_btn <- if (input$has_data=="no")
+            actionButton(paste0("add_gamma_knot_", tr_local),
+                         "Add Gamma & Knot",
+                         class = "btn btn-sm btn-outline-primary")
+          else NULL
+          
+          # Layout
+          ui_list[[length(ui_list) + 1]] <<- fluidRow(
+            column(
+              width = 4,
+              h5(strong(paste("Transition", tr_labels()[tr_local]))),
+              fluidRow(
+                column(width = 6, h5("Gammas"), gamma_inputs),
+                column(width = 6, h5("Knots"),  knot_inputs)
+              ),
+              if (!is.null(add_btn)) div(style = "margin-top:10px;", add_btn)
+            ),
+            column(width = 8, plotOutput(paste0("spline_plot_", tr_local), height = "300px")),
+            tags$div(style = "height:30px;")
+          )
+          
+          # Reactive inputs for plotting 
+          gamma_vals_re <- reactive({
+            sapply(0:(n_gammas - 1), function(i)
+              as.numeric(input[[paste0("gamma_", tr_local, "_", i)]]) %||% NA_real_)
+          })
+          knot_vals_re <- reactive({
+            sapply(1:n_knots, function(i)
+              as.numeric(input[[paste0("knot_", tr_local, "_", i)]]) %||% NA_real_)
+          })
+          
+          # Plot 
+          output[[paste0("spline_plot_", tr_local)]] <- renderPlot({
+            
+            req(input$baseline_xmax)
+            times <- seq(0.1, input$baseline_xmax, length.out = 300)
+            
+            g <- gamma_vals_re()
+            k <- knot_vals_re()
+            
+            if (is.null(g) || is.null(k) || any(is.na(g)) || any(is.na(k))) return(NULL)
+            if (length(g) < 2 || length(k) < 2) return(NULL)
+            
+            logH <- function(gammas, time, knots) {
+              # Defensive checks
+              if (is.null(knots) || length(knots) < 2) return(NA_real_)
+              knots <- suppressWarnings(as.numeric(knots))
+              if (any(is.na(knots))) return(NA_real_)
+              
+              lowest.knot  <- knots[1]
+              highest.knot <- knots[length(knots)]
+              if (is.na(lowest.knot) || is.na(highest.knot)) return(NA_real_)
+              if (!is.finite(lowest.knot) || !is.finite(highest.knot)) return(NA_real_)
+              if (lowest.knot == highest.knot) return(NA_real_)
+              
+              # Nested cubic-spline basis function, fully guarded
+              bfun <- function(time, knot) {
+                tlog <- suppressWarnings(as.numeric(log(time)))
+                knot  <- suppressWarnings(as.numeric(knot))
+                if (any(is.na(c(tlog, knot, lowest.knot, highest.knot)))) return(NA_real_)
+                if (!is.finite(tlog) || !is.finite(knot)) return(NA_real_)
+                
+                hk <- highest.knot
+                lk <- lowest.knot
+                denom <- hk - lk
+                if (denom == 0 || is.na(denom)) return(NA_real_)
+                
+                t1 <- pmax(0, tlog - knot)^3
+                t2 <- (hk - knot) * pmax(0, tlog - lk)^3 / denom
+                t3 <- (knot - lk) * pmax(0, tlog - hk)^3 / denom
+                
+                as.numeric(t1 - t2 - t3)
+              }
+              
+              # Evaluate basis
+              bvalue <- if (length(knots) > 2) {
+                sapply(knots[2:(length(knots) - 1)], function(x) bfun(time, x))
+              } else numeric(0)
+              
+              # Safe combination
+              if (any(is.na(bvalue))) return(NA_real_)
+              g <- suppressWarnings(as.numeric(gammas))
+              if (any(is.na(g))) return(NA_real_)
+              if (length(g) < 2) return(NA_real_)
+              
+              as.numeric(g %*% c(1, log(time), bvalue))
+            }
+            
+            logH_values <- suppressWarnings(sapply(times, function(x) logH(g, x, k)))
+            if (any(is.na(logH_values))) return(NULL)
+            H <- exp(logH_values)
+            h <- c(diff(H) / diff(times), NA)
+            
+            par(mfrow = c(1, 2))
+            plot(times, h, type = "l", lwd = 2, col = "darkblue",
+                 xlab = "Time", ylab = "Baseline hazard function",ylim=c(0,ymax_h),
+                 main = paste0("Transition ", tr_local, ": Baseline hazard"))
+            plot(times, H, type = "l", lwd = 2, col = "darkred",
+                 xlab = "Time", ylab = "Baseline cumulative hazard",ylim=c(0,ymax_H),
+                 main = paste0("Transition ", tr_local, ": Baseline cumulative hazard"))
+            par(mfrow = c(1, 1))
+            
+          })
+       })
       }
     }
     
@@ -1785,6 +1791,9 @@ server <- function(input, output, session){
       if (input$has_data=="no"){
         helpText("One bar
 shows an RMST; an error bar indicates \\(\\pm 1\\) standard deviation truncated at 0 and the prespecified time horizon.")
+      }else if (input$has_data=="yes"){
+        helpText("One bar
+shows an RMST; an error bar indicates its 95% confidence interval.")
       },
       br(),
       div(
@@ -2224,24 +2233,188 @@ shows an RMST; an error bar indicates \\(\\pm 1\\) standard deviation truncated 
       group_by(strategy_id, id) %>%
       slice_max(total_time, with_ties = FALSE) 
     
-    rmst_summary <- rmst %>%
-      group_by(strategy_id) %>%
-      summarise(
-        mean_rmst = mean(total_time, na.rm = TRUE),
-        sd_rmst   = sd(total_time,   na.rm = TRUE),
-        .groups   = "drop"
-      ) %>%
-      mutate(
-        transition = tr_active,
-        strategy   = ifelse(strategy_id == 1, "Yes", "No")
-      )
-    
     if (input$has_data=="no"){
-      rmst_summary <- rmst_summary %>%
+      rmst_summary <- rmst %>%
         group_by(strategy_id) %>%
-        mutate( # truncated standard deviation bar
+        summarise(
+          mean_rmst = mean(total_time, na.rm = TRUE),
+          sd_rmst   = sd(total_time, na.rm = TRUE),
+          .groups   = "drop"
+        ) %>% 
+        mutate( 
+          transition = tr_active,
+          strategy   = ifelse(strategy_id == 1, "Yes", "No"),
+          # truncated standard deviation bar
           lb = pmax(0, mean_rmst - sd_rmst),
           ub = pmin(input$rmst_time, mean_rmst + sd_rmst))
+    }
+    
+    # if has_data=="yes", perform probabilistic sensitivity analysis (PSA) for standard errors of RMSTs
+    if (input$has_data == "yes") {
+      
+      # compute the covariance matrix for the PH model with piecewise constant baseline hazard function
+      precomp <- setNames(vector("list", length(non_tx_trans())), as.character(non_tx_trans()))
+      
+      if (input$baseline_hazard == "piecewise") {
+        for (tr in non_tx_trans()) {
+          df_tr <- subset(dat(), trans == tr)
+          df_tr <- transform(df_tr, enter = 0, exit = time)
+          cuts <- transmod_params_yes[[tr]]$aux$time
+          internal_cuts <- cuts[-length(cuts)]   # internal cutpoints only
+          df_tr_split <- survival::survSplit(
+            data    = df_tr,
+            cut     = internal_cuts,
+            start   = "enter",
+            end     = "exit",
+            event   = "status",
+            episode = "ivl"
+          )
+          df_tr_split$exposure <- df_tr_split$exit - df_tr_split$enter
+          df_tr_split$ivl <- factor(df_tr_split$ivl)
+          assign_covs <- unlist(savedCovs()[sapply(savedTrns(), function(x) tr %in% x)])
+          
+          # Build a real formula (your original glm() line was not a formula)
+          form <- as.formula(
+            paste("status ~", paste(c(assign_covs, "ivl"), collapse = " + "), "- 1")
+          )
+          fit_glm <- glm(
+            form,
+            family = poisson(),
+            offset =  log(pmax(df_tr_split$exposure, 1e-12)),
+            data   = df_tr_split
+          )
+          cov0 <- vcov(fit_glm) # including the covariance matrix for the log(baseline hazard function)
+          
+          # Mean vector (must match cov0 dimension/order)
+          # Use YOUR model params as mean (as you intended)
+          h0_est <- sapply(seq_along(transmod_params_yes[[tr]]$coefs),
+                           function(x) transmod_params_yes[[tr]]$coefs[[x]][1])
+          variable_est <- transmod_params_yes[[tr]]$coefs[[1]][-1]
+          mu0 <- c(variable_est, log(h0_est))
+          precomp[[as.character(tr)]] <- list(
+            mu      = mu0,
+            Sigma   = cov0,
+            var_len = length(variable_est),
+            h0_len  = length(h0_est)
+          )
+        }
+      }
+      
+      if (input$baseline_hazard == "spline") {
+        for (tr in non_tx_trans()) {
+          gamma_est <- sapply(seq_along(transmod_params_yes[[tr]]$coefs),
+                              function(x) transmod_params_yes[[tr]]$coefs[[x]][1])
+          variable_est <- transmod_params_yes[[tr]]$coefs[[1]][-1]
+          mu0 <- c(gamma_est, variable_est)
+          cov0 <- fittedModelsRV()[[tr]][["cov"]]
+          precomp[[as.character(tr)]] <- list(
+            mu        = mu0,
+            Sigma     = cov0,
+            gamma_len = length(gamma_est)
+          )
+        }
+      }
+      
+      # Parallel bootstrap: only rmvnorm + assignment + microsim 
+      # cl <- makeCluster(7)
+      # registerDoParallel(cl)
+      num_bs <- 1000
+      psa_rmst <- data.frame(strategy_id = rep(NA,2*num_bs), mean_rmst = rep(NA,2*num_bs), bootstrap = rep(NA,2*num_bs))
+      for(bootstrap in 1:num_bs){
+        
+        transmod_params_yes_bs <- transmod_params_yes
+        transmod_params_no_bs  <- transmod_params_no
+        
+        set.seed(10000 + bootstrap)
+        
+        for (tr in non_tx_trans()) {
+          
+          pc <- precomp[[as.character(tr)]]
+          bs_coef <- as.numeric(mvtnorm::rmvnorm(1, mean = pc$mu, sigma = pc$Sigma))
+          
+          if (input$baseline_hazard == "piecewise") {
+            
+            var_len <- pc$var_len
+            h0_len  <- pc$h0_len
+            
+            # update baseline hazards (h0): coefs[[i]][1]
+            for (i in seq_len(h0_len)) {
+              transmod_params_yes_bs[[tr]]$coefs[[i]][1] <- pmax(exp(bs_coef[var_len + i]), 1e-12)  # hazards (positive)
+              transmod_params_no_bs [[tr]]$coefs[[i]][1] <- pmax(exp(bs_coef[var_len + i]), 1e-12)  # hazards (positive)
+            }
+            
+            # update covariates: coefs[[1]][-1]
+            transmod_params_yes_bs[[tr]]$coefs[[1]][-1] <- bs_coef[1:var_len]
+            transmod_params_no_bs [[tr]]$coefs[[1]][-1] <- bs_coef[1:var_len]
+            
+          } else if (input$baseline_hazard == "spline") {
+            
+            gL <- pc$gamma_len
+            
+            for (i in seq_len(gL)) {
+              transmod_params_yes_bs[[tr]]$coefs[[i]][1] <- bs_coef[i]
+              transmod_params_no_bs [[tr]]$coefs[[i]][1] <- bs_coef[i]
+            }
+            
+            transmod_params_yes_bs[[tr]]$coefs[[1]][-1] <- bs_coef[(gL + 1):length(bs_coef)]
+            transmod_params_no_bs [[tr]]$coefs[[1]][-1] <- bs_coef[(gL + 1):length(bs_coef)]
+          }
+        }
+
+        sim_yes_bs <- gen_trans_time(
+          paramsurv_list = transmod_params_yes_bs,
+          trans_mat      = tm(),
+          sim_data       = sim_data,
+          start_state    = start_state_num,
+          prior_intervention_state = state_map[[prior_intervention_state]],
+          intervention_state       = state_map[[intervention_state]],
+          thor     = input$rmst_time,
+          n_sample = input$num_sample_microsim,
+          model    = input$baseline_hazard
+        )
+        
+        sim_no_bs <- gen_trans_time(
+          paramsurv_list = transmod_params_no_bs,
+          trans_mat      = tm(),
+          sim_data       = sim_data,
+          start_state    = start_state_num,
+          prior_intervention_state = state_map[[prior_intervention_state]],
+          intervention_state       = state_map[[intervention_state]],
+          thor     = input$rmst_time,
+          n_sample = input$num_sample_microsim,
+          model    = input$baseline_hazard
+        )
+  
+        mean_yes <- mean(tapply(sim_yes_bs$total_time, sim_yes_bs$id, max, na.rm = TRUE), na.rm = TRUE)
+        mean_no  <- mean(tapply(sim_no_bs$total_time,  sim_no_bs$id,  max, na.rm = TRUE), na.rm = TRUE)
+        psa_rmst[(1:2)+bootstrap*2,] <- rbind(
+          data.frame(strategy_id = 1, mean_rmst = mean_yes, bootstrap = bootstrap),
+          data.frame(strategy_id = 2, mean_rmst = mean_no,  bootstrap = bootstrap)
+        )
+      }
+      # stopCluster(cl)
+      
+      psa_rmst_summary <- psa_rmst %>%
+        group_by(strategy_id) %>%
+        summarise(
+          lb = quantile(mean_rmst, probs = 0.025, na.rm = TRUE),
+          ub = quantile(mean_rmst, probs = 0.975, na.rm = TRUE),
+          .groups = "drop"
+        )
+      
+      rmst_summary <- rmst %>%
+        group_by(strategy_id) %>%
+        summarise(
+          mean_rmst = mean(total_time, na.rm = TRUE),
+          .groups   = "drop"
+        ) %>%
+        mutate(
+          transition = tr_active,
+          strategy   = ifelse(strategy_id == 1, "Yes", "No")
+        )
+      
+      rmst_summary <- merge(rmst_summary, psa_rmst_summary, by = "strategy_id")
+
     }
     
     rmst_summary$strategy <- factor(rmst_summary$strategy, levels = c("Yes", "No"))
@@ -2292,23 +2465,56 @@ shows an RMST; an error bar indicates \\(\\pm 1\\) standard deviation truncated 
     build_intervention_cov_values()
     req(paramsSurvListByInterventionRV())
     cat("\n=== Running all microsimulations ===\n")
-    for (tr_active in tx_trans()) {
-      run_single_microsim(tr_active)
-    }
+    withProgress(message = "Running microsimulations...", value = 0, {
+      i <- 0
+      for (tr_active in tx_trans()) {
+        i <- i+1
+        incProgress(1 / length(tx_trans()), detail = sprintf("Transition %s (%d/%d)", tr_active, i, length(tx_trans())))
+        t0 <- Sys.time()
+        run_single_microsim(tr_active)
+        cat(sprintf("tr=%s  elapsed=%.3f sec\n", tr_active, difftime(Sys.time(), t0, units = "secs")))
+      }
+    })
     cat("\n✅ All microsimulations completed.\n")
   }, ignoreInit = TRUE)
   
   
-  observe({
-    req(paramsSurvListByInterventionRV())
-    # For each treatment transition, create a separate observer
-    lapply(tx_trans(), function(tr_active) {
-      observeEvent(input[[paste0("run_tr_", tr_active)]], {
-        rv_gate$micro_ready <- TRUE
-        run_single_microsim(tr_active)
-      }, ignoreInit = TRUE)
+  tx_observers <- reactiveVal(list())
+  
+  observeEvent(tx_trans(), {
+    trs <- tx_trans()
+    req(length(trs) > 0)
+    
+    # destroy old observers (prevents multiple firing)
+    old <- tx_observers()
+    if (length(old) > 0) {
+      lapply(old, function(o) if (!is.null(o) && is.function(o$destroy)) o$destroy())
+    }
+    
+    new_obs <- lapply(trs, function(tr_active) {
+      local({
+        tr_local <- tr_active
+        btn_id   <- paste0("run_tr_", tr_local)
+        
+        observeEvent(input[[btn_id]], {
+          rv_gate$micro_ready <- TRUE
+          req(input$goToMicrosimulation)
+          build_intervention_cov_values()
+          req(paramsSurvListByInterventionRV())
+          # run_single_microsim(tr_local)
+          t <- system.time({
+            withProgress(message = paste("Running microsimulation ... transition", tr_local), value = 0, {
+              run_single_microsim(tr_local)
+            })
+          })
+          
+          message(sprintf("run_single_microsim(%s) elapsed: %.3f sec", tr_local, t[["elapsed"]]))
+        }, ignoreInit = TRUE)
+      })
     })
-  })
+    tx_observers(new_obs)
+  }, ignoreInit = FALSE)
+  
   
   observeEvent(input$reset_all, {
     updateTabsetPanel(
@@ -2434,6 +2640,7 @@ shows an RMST; an error bar indicates \\(\\pm 1\\) standard deviation truncated 
     updateNumericInput(session, "num_sample_microsim", value = 1000)
     updateNumericInput(session, "shared_covs", value = character(0))
     rv_gate$micro_ready <- FALSE
+    tx_observers <- reactiveVal(list())
   }
   
   # reset_all (<- tab 1)
