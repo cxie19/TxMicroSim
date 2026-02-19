@@ -1213,8 +1213,8 @@ server <- function(input, output, session){
             theme(
               axis.title.x = element_blank(),
               axis.title.y = element_blank(),
-              axis.text.x  = element_text(size = 14),  
-              axis.text.y = element_text(size = 14),   
+              axis.text.x  = element_text(size = 14),  #18
+              axis.text.y = element_text(size = 14),   #18
               axis.ticks.y = element_blank()
             )+ theme(
               plot.margin = margin(t = 5.5, r = 25, b = 5.5, l = 5.5)  # increase r
