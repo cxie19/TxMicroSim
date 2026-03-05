@@ -603,6 +603,17 @@ server <- function(input, output, session){
   # ----  Tab 2-1: dataset ---- 
   output$uploadData <- renderUI({
     tagList(
+      fluidRow(
+        column(
+          width = 5,
+          checkboxGroupInput(
+            "transitionSelect_first",
+            "Assign to transition(s):",
+            choices = paste0(edges()$from, " → ", edges()$to), 
+            inline = FALSE
+          )
+        )
+      ),
       fileInput("dataFile", "Upload your dataset (CSV)", accept = ".csv"),
       DTOutput("uploadedDataDT", height = "400px")
     )
@@ -610,9 +621,10 @@ server <- function(input, output, session){
   
   # If data is uploaded, read in the data 
   observeEvent(input$dataFile, {
-    req(input$dataFile)
+    req(input$dataFile, input$transitionSelect_first)
     # read data
     df <- read.csv(input$dataFile$datapath, check.names = FALSE)
+    # Filter by selected transitions
     # load data
     output$uploadedDataDT <- renderDT({
       datatable(df, options = list(scrollX = TRUE, scrollY = 300))
@@ -677,13 +689,19 @@ server <- function(input, output, session){
     if (is.null(msdata)) return()
     msdata <- msdata[msdata$time != 0, ]
     
+    label_df <- data.frame(
+      trans = seq(nrow(edges())),
+      label = paste0(edges()$from, " → ",edges()$to))
+    target_trans_first <- label_df$trans[label_df$label %in% input$transitionSelect_first]
+    msdata <- msdata[msdata$trans%in%target_trans_first,]
+    
     # Save the first dataset's transformed data (frozen)
     rv2_1$firstTransformed <- msdata
     # Initialize the combined view as the first dataset
     rv2_1$combined(msdata)
     
     # Display transformed data
-    output$msdataTitle <- renderUI(h4("Transformed dataset for multistate modeling (first dataset)"))
+    output$msdataTitle <- renderUI(h4("Transformed dataset for multistate modeling (First dataset)"))
     output$msdataDT <- renderDT({
       req(rv2_1$firstTransformed)
       datatable(rv2_1$firstTransformed, options = list(scrollX = TRUE, scrollY = 300))
@@ -695,6 +713,7 @@ server <- function(input, output, session){
     output$transitionCountDT <- renderDT({
       datatable(trans_counts[, c("label", "n_patients")],
                 colnames = c("Transition", "Number of Patients"),
+                rownames = FALSE,
                 options = list(scrollX = TRUE, paging = FALSE, dom = "t"))
     })
     
@@ -779,7 +798,9 @@ server <- function(input, output, session){
         NULL
       }
     )
+
     if (is.null(msdata_extra)) return()
+    msdata_extra <- msdata_extra[msdata_extra$time != 0, ]
     
     # Filter by selected transitions
     label_df <- data.frame(
@@ -794,7 +815,7 @@ server <- function(input, output, session){
     
     # Append and rebuild combined from the frozen first dataset
     rv2_1$extraList[[length(rv2_1$extraList) + 1]] <- msdata_extra
-    combined_data <- do.call(rbind, c(list(rv2_1$firstTransformed), rv2_1$extraList))
+    combined_data <- dplyr::bind_rows(c(list(rv2_1$firstTransformed), rv2_1$extraList))
     rv2_1$combined(combined_data)
     
     # Update combined displays
@@ -809,6 +830,7 @@ server <- function(input, output, session){
     output$combinedCountDT <- renderDT({
       datatable(trans_counts_combined[, c("label", "n_patients")],
                 colnames = c("Transition", "Number of Patients"),
+                rownames = FALSE,
                 options = list(scrollX = TRUE, paging = FALSE, dom = "t"))
     })
     
@@ -1025,7 +1047,7 @@ server <- function(input, output, session){
         if (nrow(df_tr) == 0) next
         
         assign_covs <- unlist(savedCovs()[sapply(savedTrns(), function(x) tr %in% x)])
-        formula_str <- paste("Surv(time, status) ~", paste(assign_covs, collapse = " + "))
+        formula_str <- paste("Surv(time, status) ~", paste0(assign_covs, collapse = " + "))
         f <- as.formula(formula_str)
         
         # Branch by model type
