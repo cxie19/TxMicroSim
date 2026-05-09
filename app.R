@@ -114,7 +114,7 @@ ui <- fluidPage(
                          visNetworkOutput("transitionDiagram", height = "560px", width = "100%"),
                          div(class = "muted",
                              tags$em("Note: Blue edges represent normal transitions; black edges indicate treatment transitions.")
-                        )
+                         )
                      )
                    ),
                    column(
@@ -162,8 +162,10 @@ ui <- fluidPage(
                    inline = TRUE) ,
                  conditionalPanel(
                    condition = "input.has_data == 'yes'",
+                   
                    h5("Please upload a dataset for multistate modeling in the CSV format."),
                    h5("The instructions for the data format are as follows:"),
+                   
                    tags$ul(
                      tags$li("Each row = one patient"),
                      tags$li(
@@ -171,19 +173,51 @@ ui <- fluidPage(
                        tags$ul(
                          tags$li("Unique patient identifier (e.g., id / ID / Id)."),
                          tags$li("Time column per state: Column names must match the state names you defined 
-               in the multistate structure (e.g., State1, State2, State3). Each column is the time of entering that state."),
+                 in the multistate structure (e.g., State1, State2, State3). Each column is the time of entering that state."),
                          tags$li("Status column per state: <state>.s (e.g., State1.s, State2.s, State3.s).
-                                     Value should be 1 if the patient entered the corresponding state, 0 otherwise."),
-                         tags$ul(tags$li("For a patient's status column(s) equal to 0, the time column(s) for the corresponding states should be the last observed time of the patient.")),
+                 Value should be 1 if the patient entered the corresponding state, 0 otherwise."),
+                         tags$ul(
+                           tags$li("For a patient's status column(s) equal to 0, the time column(s) for the corresponding states should be the last observed time of the patient.")
+                         ),
                          tags$li("Covariates: any additional columns for the covariates measured at baseline (time 0). Categorical covariates should be dummy-coded with a reference level.")
                        )
                      )
                    ),
+                   
+                   tags$div(
+                     style = "margin-top: 15px; margin-bottom: 20px; padding: 12px; border: 1px solid #ddd; border-radius: 6px; background-color: #f9f9f9;",
+                     
+                     h5("Example datasets"),
+                     p("You may download the sample CSV files below and use them as examples for preparing your own dataset."),
+                     
+                     downloadButton(
+                       outputId = "downloadSampleAll",
+                       label = "Download sample_all_transitions.csv",
+                       class = "btn btn-default"
+                     ),
+                     
+                     downloadButton(
+                       outputId = "downloadSampleTransition10",
+                       label = "Download sample_transition_10.csv",
+                       class = "btn btn-default"
+                     ),
+                     
+                     tags$a(
+                       href = "https://github.com/cxie19/TxMicroSim/tree/main/sample_data",
+                       "View sample_data folder on GitHub",
+                       target = "_blank",
+                       rel = "noopener noreferrer",
+                       class = "btn btn-link",
+                       style = "margin-left: 10px;"
+                     )
+                   ),
+                   
                    uiOutput("uploadData"),
                    br(),
                    uiOutput("msdataTitle"),
                    DTOutput("msdataDT", height = "400px"),
                    br(),
+                   
                    fluidRow(
                      column(
                        width = 6,
@@ -191,12 +225,17 @@ ui <- fluidPage(
                        DTOutput("transitionCountDT")
                      )
                    ),
+                   
                    br(),
-                   # Add one more dataset 
+                   
                    uiOutput("addSectionUI"),
                    br(),
-                   actionButton("goToCovars", "Next: Covariate Assignment",
-                                class = "btn btn-primary")
+                   
+                   actionButton(
+                     "goToCovars",
+                     "Next: Covariate Assignment",
+                     class = "btn btn-primary"
+                   )
                  ),
                  # Show guidance if NO
                  conditionalPanel(
@@ -332,7 +371,7 @@ ui <- fluidPage(
         )
       )
     ),
-
+    
     # ---- Tab 3: Treatment Strategies ----
     tabPanel(
       "Treatment Strategies",
@@ -356,12 +395,12 @@ ui <- fluidPage(
               step = 100
             ),
           )
-       ),
-       tags$hr(),
-     ),
-     uiOutput("interventionStrategiesUI"),
-     tagList(
-       tags$style(HTML("
+        ),
+        tags$hr(),
+      ),
+      uiOutput("interventionStrategiesUI"),
+      tagList(
+        tags$style(HTML("
     .btn-blue-1 { background-color:#0B2E4B; border-color:#0B2E4B; color:#fff; }
     .btn-blue-2 { background-color:#0D47A1; border-color:#0D47A1; color:#fff; }
     .btn-blue-3 { background-color:#1976D2; border-color:#1976D2; color:#fff; }
@@ -372,24 +411,24 @@ ui <- fluidPage(
       filter: brightness(0.95);
     }
   ")),
-       
-       fluidRow(
-         column(
-           width = 12,
-           h4("Start a new analysis with one of the following options:"),
-           
-           actionButton("reset_all",       "1) Re-run from the beginning",         class = "btn btn-blue-1"),
-           actionButton("reset_data",      "2) Update the data",                   class = "btn btn-blue-2"),
-           actionButton("reset_covariate", "3) Change covariate sets",             class = "btn btn-blue-3"),
-           actionButton("reset_model",     "4) Change the model",                  class = "btn btn-blue-4"),
-           actionButton("reset_micro",     "5) Reset the microsimulation setting", class = "btn btn-blue-5")
-         )
-       )
-     )
-     ),
-   
-   # ---- References ----
-   tabPanel("References",
+        
+        fluidRow(
+          column(
+            width = 12,
+            h4("Start a new analysis with one of the following options:"),
+            
+            actionButton("reset_all",       "1) Re-run from the beginning",         class = "btn btn-blue-1"),
+            actionButton("reset_data",      "2) Update the data",                   class = "btn btn-blue-2"),
+            actionButton("reset_covariate", "3) Change covariate sets",             class = "btn btn-blue-3"),
+            actionButton("reset_model",     "4) Change the model",                  class = "btn btn-blue-4"),
+            actionButton("reset_micro",     "5) Reset the microsimulation setting", class = "btn btn-blue-5")
+          )
+        )
+      )
+    ),
+    
+    # ---- References ----
+    tabPanel("References",
              h4("Royston, P. and Parmar, M. (2002). Flexible parametric proportional-hazards and proportionalodds models for censored survival data, with application to prognostic modelling and estimation of treatment effects. Statistics in Medicine 21(1):2175-2197."))
   ),
   
@@ -575,7 +614,7 @@ server <- function(input, output, session){
     paste0(edges()$label, ": ", edges()$from, " → ", edges()$to),
     edges()$label
   ))
- 
+  
   # ----  Tab 2: Multistate Modeling ---- 
   rv_gate <- reactiveValues(#data_ready = FALSE,
     model_ready = FALSE,
@@ -601,6 +640,34 @@ server <- function(input, output, session){
   observer_flags <- reactiveValues()
   
   # ----  Tab 2-1: dataset ---- 
+  output$downloadSampleAll <- downloadHandler(
+    filename = function() {
+      "sample_all_transitions.csv"
+    },
+    content = function(file) {
+      file.copy(
+        from = file.path("sample_data", "sample_all_transitions.csv"),
+        to = file,
+        overwrite = TRUE
+      )
+    },
+    contentType = "text/csv"
+  )
+  
+  output$downloadSampleTransition10 <- downloadHandler(
+    filename = function() {
+      "sample_transition_10.csv"
+    },
+    content = function(file) {
+      file.copy(
+        from = file.path("sample_data", "sample_transition_10.csv"),
+        to = file,
+        overwrite = TRUE
+      )
+    },
+    contentType = "text/csv"
+  )
+  
   output$uploadData <- renderUI({
     tagList(
       fluidRow(
@@ -798,7 +865,7 @@ server <- function(input, output, session){
         NULL
       }
     )
-
+    
     if (is.null(msdata_extra)) return()
     msdata_extra <- msdata_extra[msdata_extra$time != 0, ]
     
@@ -1667,7 +1734,7 @@ server <- function(input, output, session){
             par(mfrow = c(1, 1))
             
           })
-       })
+        })
       }
     }
     
@@ -2382,7 +2449,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
             transmod_params_no_bs [[tr]]$coefs[[1]][-1] <- bs_coef[(gL + 1):length(bs_coef)]
           }
         }
-
+        
         sim_yes_bs <- gen_trans_time(
           paramsurv_list = transmod_params_yes_bs,
           trans_mat      = tm(),
@@ -2406,7 +2473,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
           n_sample = input$num_sample_microsim,
           model    = input$baseline_hazard
         )
-  
+        
         mean_yes <- mean(tapply(sim_yes_bs$total_time, sim_yes_bs$id, max, na.rm = TRUE), na.rm = TRUE)
         mean_no  <- mean(tapply(sim_no_bs$total_time,  sim_no_bs$id,  max, na.rm = TRUE), na.rm = TRUE)
         psa_rmst[(1:2)+bootstrap*2,] <- rbind(
@@ -2436,7 +2503,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
         )
       
       rmst_summary <- merge(rmst_summary, psa_rmst_summary, by = "strategy_id")
-
+      
     }
     
     rmst_summary$strategy <- factor(rmst_summary$strategy, levels = c("Yes", "No"))
