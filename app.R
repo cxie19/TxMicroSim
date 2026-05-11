@@ -8,8 +8,10 @@ library(eha) # fit PH model with piecewise constant function for baseline hazard
 library(flexsurv) # fit PH model with natural cubic spline for baseline log cumulative hazard function
 library(ggplot2) # for plots
 library(scales)  # for plots
+library(patchwork)
 library(hesim)   # use params_surv() to store the fitted models
 library(dplyr)
+library(tidyr)
 library(doParallel)
 library(mvtnorm)
 
@@ -669,6 +671,8 @@ server <- function(input, output, session){
   )
   
   output$uploadData <- renderUI({
+    transition_labels <- paste0(edges()$from, " \u2192 ", edges()$to)
+    
     tagList(
       fluidRow(
         column(
@@ -676,7 +680,7 @@ server <- function(input, output, session){
           checkboxGroupInput(
             "transitionSelect_first",
             "Assign to transition(s):",
-            choices = paste0(edges()$from, " → ", edges()$to), 
+            choices = c(transition_labels),
             inline = FALSE
           )
         )
@@ -1887,7 +1891,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
       br(),
       div(
         style = "text-align:center;",
-        actionButton("run_all_transitions", "Run microsimulation for all transitions", class = "btn btn-success")
+        actionButton("run_all_transitions", "Run microsimulation for all treatment transitions", class = "btn btn-success")
       ),
       br()
     )
@@ -1970,7 +1974,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
     
     # Build transition panels 
     n_trs <- length(tx_trans())
-    cols_per_row <- 3
+    cols_per_row <- 1
     n_rows <- ceiling(n_trs / cols_per_row)
     
     rows <- lapply(seq_len(n_rows), function(r) {
@@ -2002,14 +2006,36 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
         })
         
         column(
-          width = 4,
+          width = 12,
           wellPanel(
+            style = "background-color:#ffffff; border:1px solid #dee2e6; border-radius:8px; padding:18px; margin-bottom:25px;",
+            
             h5(strong(tr_label)),
-            tagList(inputs),
-            div(style = "text-align:center; margin-top:10px;",
-                actionButton(paste0("run_tr_", tr), "Run microsimulation", class = "btn btn-primary btn-sm")),
-            # Each transition gets its own plot
-            plotOutput(paste0("microsimPlot_", tr), height = "250px")
+            
+            fluidRow(
+              column(
+                width = 4,   # left 1/3: covariate inputs
+                h5("Covariate values"),
+                tagList(inputs),
+                div(
+                  style = "text-align:center; margin-top:10px;",
+                  actionButton(
+                    paste0("run_tr_", tr),
+                    "Run microsimulation",
+                    class = "btn btn-primary btn-sm"
+                  )
+                )
+              ),
+              
+              column(
+                width = 8,   # right 2/3: plot
+                h5("Treatment strategy outcomes"),
+                plotOutput(
+                  paste0("microsimPlot_", tr),
+                  width = "250px"
+                )
+              )
+            )
           )
         )
       })
@@ -2476,7 +2502,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
         
         mean_yes <- mean(tapply(sim_yes_bs$total_time, sim_yes_bs$id, max, na.rm = TRUE), na.rm = TRUE)
         mean_no  <- mean(tapply(sim_no_bs$total_time,  sim_no_bs$id,  max, na.rm = TRUE), na.rm = TRUE)
-        psa_rmst[(1:2)+bootstrap*2,] <- rbind(
+        psa_rmst[(1:2)+(bootstrap-1)*2,] <- rbind(
           data.frame(strategy_id = 1, mean_rmst = mean_yes, bootstrap = bootstrap),
           data.frame(strategy_id = 2, mean_rmst = mean_no,  bootstrap = bootstrap)
         )
@@ -2504,6 +2530,35 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
       
       rmst_summary <- merge(rmst_summary, psa_rmst_summary, by = "strategy_id")
       
+      # Point estimate: RMST_HSCT - RMST_No_HSCT
+      rmst_diff_point <- rmst_summary$mean_rmst[rmst_summary$strategy == "Yes"] -
+        rmst_summary$mean_rmst[rmst_summary$strategy == "No"]
+      
+      # 95% CI from PSA/bootstrap replicate-level differences
+      psa_diff_summary <- psa_rmst %>%
+        mutate(strategy = ifelse(strategy_id == 1, "Yes", "No")) %>%
+        select(bootstrap, strategy, mean_rmst) %>%
+        tidyr::pivot_wider(
+          names_from = strategy,
+          values_from = mean_rmst
+        ) %>%
+        mutate(
+          rmst_diff = Yes - No
+        ) %>%
+        summarise(
+          lb = quantile(rmst_diff, probs = 0.025, na.rm = TRUE),
+          ub = quantile(rmst_diff, probs = 0.975, na.rm = TRUE),
+          .groups = "drop"
+        )
+      
+      rmst_diff_summary <- data.frame(
+        transition = tr_active,
+        contrast = "HSCT - No HSCT",
+        rmst_diff = rmst_diff_point,
+        lb = psa_diff_summary$lb,
+        ub = psa_diff_summary$ub
+      )
+      
     }
     
     rmst_summary$strategy <- factor(rmst_summary$strategy, levels = c("Yes", "No"))
@@ -2511,36 +2566,95 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
     output[[paste0("microsimPlot_", tr_active)]] <- renderPlot({
       req(rv_gate$micro_ready)
       
-      ggplot(rmst_summary, aes(x = strategy, y = mean_rmst, fill = strategy)) +
+      p_abs <- ggplot(rmst_summary, aes(x = strategy, y = mean_rmst, fill = strategy)) +
         geom_col(width = 0.6) +
         geom_errorbar(
           aes(ymin = lb, ymax = ub),
           width = 0.15, linewidth = 0.8
         ) +
         geom_text(
-          aes(label = number(mean_rmst, accuracy = 0.01)),
-          nudge_x = 0.10,                         
-          nudge_y = 0.02 * input$rmst_time,       
+          aes(label = scales::number(mean_rmst, accuracy = 0.01)),
+          nudge_x = 0.10,
+          nudge_y = 0.02 * input$rmst_time,
           hjust = 0, vjust = 0,
           size = 5
         ) +
         coord_cartesian(clip = "off") +
         theme_minimal(base_size = 14) +
         labs(
-          title = paste("Treatment at state", edges()[tr_active, "from"]),
-          x = NULL, y = "Restricted Mean Survival Time", fill = ""
+          title = "Restricted Mean Survival Time",
+          x = NULL,
+          y = "Restricted Mean Survival Time",
+          fill = ""
         ) +
         theme(
           legend.position = "none",
-          axis.text.x  = element_text(size = 16),
-          axis.text.y  = element_text(size = 16),
-          axis.title.y = element_text(size = 16),
-          plot.margin = margin(5.5, 30, 5.5, 5.5)  # extra right margin for labels
+          axis.text.x  = element_text(size = 14),
+          axis.text.y  = element_text(size = 14),
+          axis.title.y = element_text(size = 14),
+          plot.title   = element_text(size = 15),
+          plot.margin = margin(5.5, 30, 5.5, 5.5)
         ) +
         scale_y_continuous(
           limits = c(0, input$rmst_time),
           expand = expansion(mult = c(0, 0.08))
         )
+      
+      max_abs_diff <- max(
+        abs(c(
+          rmst_diff_summary$rmst_diff,
+          rmst_diff_summary$lb,
+          rmst_diff_summary$ub
+        )),
+        na.rm = TRUE
+      )
+      
+      if (!is.finite(max_abs_diff) || max_abs_diff == 0) {
+        max_abs_diff <- 1
+      }
+      
+      p_diff <- ggplot(
+        rmst_diff_summary,
+        aes(x = contrast, y = rmst_diff)
+      ) +
+        geom_hline(
+          yintercept = 0,
+          linetype = "dashed",
+          linewidth = 0.7
+        ) +
+        geom_errorbar(
+          aes(ymin = lb, ymax = ub),
+          width = 0.12,
+          linewidth = 0.8
+        ) +
+        geom_point(size = 2.0) +
+        geom_text(
+          aes(label = scales::number(rmst_diff, accuracy = 0.01)),
+          nudge_y = 0.05 * max_abs_diff,
+          size = 4
+        ) +
+        coord_cartesian(clip = "off") +
+        theme_minimal(base_size = 14) +
+        labs(
+          title = "Difference in RMST",
+          x = NULL,
+          y = "RMST difference: Yes - No"
+        ) +
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          # axis.text.x  = element_text(size = 14),
+          axis.text.y  = element_text(size = 14),
+          axis.title.y = element_text(size = 14),
+          plot.title   = element_text(size = 15),
+          plot.margin  = margin(5.5, 30, 5.5, 5.5)
+        ) +
+        scale_y_continuous(
+          limits = c(-1.15 * max_abs_diff, 1.15 * max_abs_diff),
+          expand = expansion(mult = c(0.05, 0.10))
+        )
+      
+      (p_abs | p_diff)  + patchwork::plot_layout(widths = c(1.4, 1))
     })
     
     cat("✅ Completed single microsimulation for", tr_active, "\n")
