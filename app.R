@@ -32,28 +32,290 @@ ui <- fluidPage(
   withMathJax(),
   titlePanel("Toolkit for Multistate Disease Progression Simulation and Treatment Decision-Making Aid"),
   
-  # Custom box style 
   tags$head(
     tags$style(HTML("
-      .box {
-        background: #ffffff;
-        border: 1px solid #dee2e6;
-        border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 16px;
-        box-shadow: 0 2px 4px rgba(0,0,0,.05);
-      }
-      .box h4 {
-        margin-top: 0;
-        font-weight: 600;
-      }
-    "))
-  ),
-  
-  tags$head(
+    .box {
+      background-color: #ffffff;
+      border: 1px solid #dce3ea;
+      border-left: 4px solid #2b7bba;
+      border-radius: 8px;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.12);
+      padding: 18px;
+      margin-bottom: 20px;
+    }
+
+    .input-box {
+      min-height: 100%;
+    }
+
+    .box h4 {
+      margin-top: 0;
+      font-weight: 600;
+    }
+  ")),
+    
     tags$style(HTML("
-    .input-box { background: #f8f9fa; border-left: 4px solid #2b7bba; }
-    .output-box { background: #ffffff; border-left: 4px solid #28a745; }
+    .pdf-print-wrapper {
+      background: white !important;
+      width: 1000px !important;
+      max-width: 1000px !important;
+      padding: 24px !important;
+      box-sizing: border-box !important;
+      overflow: visible !important;
+    }
+
+    .pdf-print-wrapper .row {
+      margin-left: 0 !important;
+      margin-right: 0 !important;
+    }
+
+    .pdf-print-wrapper [class^='col-'],
+    .pdf-print-wrapper [class*=' col-'] {
+      padding-left: 8px !important;
+      padding-right: 8px !important;
+      box-sizing: border-box !important;
+    }
+
+    .pdf-print-wrapper .well,
+    .pdf-print-wrapper .box,
+    .pdf-print-wrapper .pdf-block {
+      overflow: visible !important;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+
+    .pdf-print-wrapper .pdf-block {
+      margin-bottom: 18px !important;
+    }
+
+    .pdf-print-wrapper .shiny-plot-output,
+    .pdf-print-wrapper img {
+      max-width: 100% !important;
+      overflow: visible !important;
+    }
+
+    .pdf-print-wrapper input.form-control {
+      height: auto !important;
+      min-height: 34px !important;
+      font-size: 14px !important;
+    }
+  ")),
+    
+    tags$script(src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"),
+    tags$script(src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"),
+    
+    tags$script(HTML("
+    function getSelectedBaselineModel() {
+      var selected = document.querySelector('input[name=\"baseline_hazard\"]:checked');
+
+      if (!selected) {
+        return 'model_not_selected';
+      }
+
+      return selected.value.replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+
+    function copyFormValues(original, clone) {
+      var originalFields = original.querySelectorAll('input, textarea, select');
+      var cloneFields = clone.querySelectorAll('input, textarea, select');
+
+      originalFields.forEach(function(field, i) {
+        var cloneField = cloneFields[i];
+        if (!cloneField) return;
+
+        if (field.type === 'checkbox' || field.type === 'radio') {
+          cloneField.checked = field.checked;
+
+          if (field.checked) {
+            cloneField.setAttribute('checked', 'checked');
+          } else {
+            cloneField.removeAttribute('checked');
+          }
+
+        } else if (field.tagName.toLowerCase() === 'select') {
+          cloneField.value = field.value;
+
+        } else {
+          cloneField.value = field.value;
+          cloneField.setAttribute('value', field.value);
+        }
+      });
+    }
+
+    async function renderBlockToCanvas(block) {
+      return await html2canvas(block, {
+        scale: 1.4,
+        useCORS: true,
+        backgroundColor: '#ffffff',
+        scrollX: 0,
+        scrollY: 0,
+        x: 0,
+        y: 0,
+        width: block.scrollWidth,
+        height: block.scrollHeight,
+        windowWidth: block.scrollWidth,
+        windowHeight: block.scrollHeight
+      });
+    }
+
+    function addCanvasBlockToPDF(pdf, canvas, state) {
+      var margin = state.margin;
+      var gap = state.gap;
+      var pageHeight = state.pageHeight;
+      var usableWidth = state.usableWidth;
+      var usableHeight = state.usableHeight;
+
+      var imgWidth = usableWidth;
+      var imgHeight = canvas.height * imgWidth / canvas.width;
+
+      // If the block fits on one page, keep it together.
+      if (imgHeight <= usableHeight) {
+        if (!state.isFirstBlock && state.currentY + imgHeight > pageHeight - margin) {
+          pdf.addPage();
+          state.currentY = margin;
+        }
+
+        var imgData = canvas.toDataURL('image/png');
+        pdf.addImage(imgData, 'PNG', margin, state.currentY, imgWidth, imgHeight);
+
+        state.currentY = state.currentY + imgHeight + gap;
+        state.isFirstBlock = false;
+
+        return state;
+      }
+
+      // If the block itself is taller than one page, split only this block.
+      if (!state.isFirstBlock && state.currentY > margin + 0.01) {
+        pdf.addPage();
+        state.currentY = margin;
+      }
+
+      var maxSliceHeightPx = Math.floor(canvas.width * usableHeight / usableWidth);
+      var y = 0;
+
+      while (y < canvas.height) {
+        var sliceHeightPx = Math.min(maxSliceHeightPx, canvas.height - y);
+
+        var sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = sliceHeightPx;
+
+        var ctx = sliceCanvas.getContext('2d');
+        ctx.drawImage(
+          canvas,
+          0, y, canvas.width, sliceHeightPx,
+          0, 0, canvas.width, sliceHeightPx
+        );
+
+        var sliceImgData = sliceCanvas.toDataURL('image/png');
+        var sliceImgHeight = sliceHeightPx * usableWidth / canvas.width;
+
+        if (y > 0) {
+          pdf.addPage();
+          state.currentY = margin;
+        }
+
+        pdf.addImage(
+          sliceImgData,
+          'PNG',
+          margin,
+          state.currentY,
+          usableWidth,
+          sliceImgHeight
+        );
+
+        state.currentY = margin + sliceImgHeight + gap;
+        state.isFirstBlock = false;
+
+        y = y + sliceHeightPx;
+      }
+
+      return state;
+    }
+
+    async function downloadSectionAsPDF(sectionId, baseFilename) {
+      var original = document.getElementById(sectionId);
+
+      if (!original) {
+        alert('Section not found: ' + sectionId);
+        return;
+      }
+
+      var modelName = getSelectedBaselineModel();
+      var filename = baseFilename + '_' + modelName + '.pdf';
+
+      var clone = original.cloneNode(true);
+      copyFormValues(original, clone);
+
+      clone.id = sectionId + '_pdf_clone';
+      clone.classList.add('pdf-print-wrapper');
+
+      var buttons = clone.querySelectorAll('.no-pdf');
+      buttons.forEach(function(btn) {
+        btn.remove();
+      });
+
+      var holder = document.createElement('div');
+      holder.style.position = 'absolute';
+      holder.style.left = '0px';
+      holder.style.top = '0px';
+      holder.style.width = '1000px';
+      holder.style.background = 'white';
+      holder.style.overflow = 'visible';
+      holder.style.zIndex = '99999';
+      holder.style.pointerEvents = 'none';
+
+      holder.appendChild(clone);
+      document.body.appendChild(holder);
+
+      await new Promise(resolve => setTimeout(resolve, 600));
+
+      try {
+        var jsPDF = window.jspdf.jsPDF;
+        var pdf = new jsPDF({
+          orientation: 'landscape',
+          unit: 'in',
+          format: 'letter'
+        });
+
+        var margin = 0.3;
+        var gap = 0.15;
+        var pageWidth = pdf.internal.pageSize.getWidth();
+        var pageHeight = pdf.internal.pageSize.getHeight();
+        var usableWidth = pageWidth - 2 * margin;
+        var usableHeight = pageHeight - 2 * margin;
+
+        var state = {
+          margin: margin,
+          gap: gap,
+          pageWidth: pageWidth,
+          pageHeight: pageHeight,
+          usableWidth: usableWidth,
+          usableHeight: usableHeight,
+          currentY: margin,
+          isFirstBlock: true
+        };
+
+        var blocks = clone.querySelectorAll('.pdf-block');
+
+        if (blocks.length === 0) {
+          blocks = [clone];
+        }
+
+        for (var i = 0; i < blocks.length; i++) {
+          var canvas = await renderBlockToCanvas(blocks[i]);
+          state = addCanvasBlockToPDF(pdf, canvas, state);
+        }
+
+        pdf.save(filename);
+        document.body.removeChild(holder);
+
+      } catch (error) {
+        document.body.removeChild(holder);
+        console.error(error);
+        alert('PDF generation failed. Please check the browser console.');
+      }
+    }
   "))
   ),
   
@@ -295,31 +557,14 @@ ui <- fluidPage(
                                   value = 20, min = 20, step = 1)
                    ),
                    
-                   
+                   br(),
                    conditionalPanel(
-                     condition = "input.baseline_hazard == 'piecewise'",
-                     br(),
-                     conditionalPanel(
-                       condition = "input.has_data == 'yes'",
-                       actionButton("goToHR", "Next: Fit Transition-Specific Models", class = "btn-primary")
-                     ),
-                     conditionalPanel(
-                       condition = "input.has_data == 'no'",
-                       actionButton("goToHR", "Next: Specify Model Parameter Values", class = "btn-primary")
-                     )
+                     condition = "input.has_data == 'yes'",
+                     actionButton("goToHR", "Next: Fit Transition-Specific Models", class = "btn-primary")
                    ),
-                   
                    conditionalPanel(
-                     condition = "input.baseline_hazard == 'spline'",
-                     br(),
-                     conditionalPanel(
-                       condition = "input.has_data == 'yes'",
-                       actionButton("goToHR", "Next: Fit Transition-Specific Models", class = "btn-primary")
-                     ),
-                     conditionalPanel(
-                       condition = "input.has_data == 'no'",
-                       actionButton("goToHR", "Next: Specify Model Parameter Values", class = "btn-primary")
-                     )
+                     condition = "input.has_data == 'no'",
+                     actionButton("goToHR", "Next: Specify Model Parameter Values", class = "btn-primary")
                    )
                    
                  )
@@ -332,42 +577,82 @@ ui <- fluidPage(
                    tabPanel("Covariates",
                             conditionalPanel(
                               condition = "input.has_data == 'yes' || input.has_data == 'no'",
-                              h4("Hazard Ratios of Covariates"),
-                              conditionalPanel(
-                                condition = "input.has_data == 'yes' ",
-                                h5("The hazard ratios (HRs) of the covariates under transitions are estimated from the flexible parametric proportional hazards models. 
-                                             They can be adjusted as needed.")),
-                              conditionalPanel(
-                                condition = "input.has_data == 'no'",
-                                h5("Define the hazard ratios (HRs) of the covariates under transitions. The defaults are 1")
+                              div(
+                                id = "covariate_pdf_section",
+                                
+                                h4("Hazard Ratios of Covariates"),
+                                
+                                conditionalPanel(
+                                  condition = "input.has_data == 'yes' ",
+                                  h5("The hazard ratios (HRs) of the covariates under transitions are estimated from the flexible parametric proportional hazards models. 
+       They can be adjusted as needed.")
+                                ),
+                                
+                                conditionalPanel(
+                                  condition = "input.has_data == 'no'",
+                                  h5("Define the hazard ratios (HRs) of the covariates under transitions. The defaults are 1")
+                                ),
+                                
+                                h5(tags$i(
+                                  "Hazard ratios of covariates are the exponential of the corresponding parameter coefficients. The hazard ratios are greater than 0.",
+                                  br(),
+                                  "For example, a hazard ratio > 1 indicates that the greater the value of the covariate, the larger the hazards it has.",
+                                  br(),
+                                  "A hazard ratio < 1 indicates that the greater the value of the covariate, the smaller the hazards it has."
+                                )),
+                                
+                                uiOutput("hr_inputs")
                               ),
-                              h5(tags$i("Hazard ratios of covariates are the exponential of the corresponding parameter coefficients. The hazard ratios are greater than 0.", br(),
-                                        "For example, a hazard ratio > 1 indicates that the greater the value of the covariate, the larger the hazards it has.",br(),
-                                        "A hazard ratio < 1 indicates that the greater the value of the covariate, the smaller the hazards it has.")),
-                              uiOutput("hr_inputs"),
+                              
                               br(),
-                              div(style = "display: flex; justify-content: flex-end; margin-top: 20px;",
-                                  actionButton("goToBaseHaz", "Next: Parameters in the baseline hazard functions", class = "btn btn-primary")
+                              
+                              div(
+                                class = "no-pdf",
+                                style = "display: flex; justify-content: space-between; margin-top: 20px;",
+                                
+                                actionButton(
+                                  "downloadCovariatePDF",
+                                  "Download the results as PDF",
+                                  class = "btn btn-success no-pdf",
+                                  onclick = "downloadSectionAsPDF('covariate_pdf_section', 'covariate_hazard_ratios')"
+                                ),
+                                
+                                actionButton(
+                                  "goToBaseHaz",
+                                  "Next: Parameters in the baseline hazard functions",
+                                  class = "btn btn-primary"
+                                )
                               )
                             )
                    ),
-                   tabPanel("Baseline Hazard Functions",
-                            conditionalPanel(condition="input.baseline_hazard == 'spline'",
-                                             conditionalPanel(
-                                               condition = "input.has_data == 'yes' || input.has_data == 'no'",
-                                               h4("Parameters of Baseline Cumulative Hazard Functions"),
-                                               h5("Define the parameter coefficients of the baseline cumulative hazard function for each transition."),
-                                               h5(tags$i("In the Royston–Parmar proportional hazards model, the logrithm of the baseline cumulative hazard function was modeled by a natural cubic spline.
-                                                         While adjusting the numeric inputs of gammas and knots, the baseline hazard functions do not have negative values")),
-                                               
-                                             ),
-                                             conditionalPanel(
-                                               condition = "input.has_data == 'yes' ",
-                                               h5(tags$i("The total number of knots are two boundary knots plus the number of interior knots. 
-                                                   The number of interior knots is automatically determined during model fitting with the smallest the Bayesian information criteria. "))
-                                             )
-                            ),
-                            uiOutput("baseline_hazards_inputs")
+                   tabPanel(
+                     "Baseline Hazard Functions",
+                     
+                     div(
+                       id = "baseline_pdf_section",
+                       
+                       conditionalPanel(
+                         condition = "input.baseline_hazard == 'spline'",
+                         conditionalPanel(
+                           condition = "input.has_data == 'yes' || input.has_data == 'no'",
+                           h4("Parameters of Baseline Cumulative Hazard Functions"),
+                           h5("Define the parameter coefficients of the baseline cumulative hazard function for each transition."),
+                           h5(tags$i(
+                             "In the Royston–Parmar proportional hazards model, the logarithm of the baseline cumulative hazard function was modeled by a natural cubic spline.
+           While adjusting the numeric inputs of gammas and knots, the baseline hazard functions do not have negative values."
+                           ))
+                         ),
+                         conditionalPanel(
+                           condition = "input.has_data == 'yes' ",
+                           h5(tags$i(
+                             "The total number of knots are two boundary knots plus the number of interior knots. 
+           The number of interior knots is automatically determined during model fitting with the smallest Bayesian information criteria."
+                           ))
+                         )
+                       ),
+                       
+                       uiOutput("baseline_hazards_inputs")
+                     )
                    )
                  ),
         )
@@ -377,42 +662,66 @@ ui <- fluidPage(
     # ---- Tab 3: Treatment Strategies ----
     tabPanel(
       "Treatment Strategies",
-      h4("Predict the restricted mean survival times (RMSTs) under different treatment strategies for a patient with given covariate values using the microsimulation method."),
-      tagList(
-        fluidRow(
-          column(
-            width = 12,
-            numericInput(
-              inputId = "rmst_time",
-              label = strong("Time Horizon for Restricted Mean Survival Time"),
-              value = 15,
-              min = 0,
-              step = 5
-            ),
-            numericInput(
-              inputId = "num_sample_microsim",
-              label = strong("Number of simulated patients for the microsimulation"),
-              value = 1000,
-              min = 0,
-              step = 100
-            ),
-          )
+      
+      div(
+        id = "treatment_pdf_section",
+        
+        h4("Predict the restricted mean survival times (RMSTs) under different treatment strategies for a patient with given covariate values using the microsimulation method."),
+        
+        tagList(
+          fluidRow(
+            column(
+              width = 12,
+              numericInput(
+                inputId = "rmst_time",
+                label = strong("Time Horizon for Restricted Mean Survival Time"),
+                value = 15,
+                min = 0,
+                step = 5
+              ),
+              numericInput(
+                inputId = "num_sample_microsim",
+                label = strong("Number of simulated patients for the microsimulation"),
+                value = 1000,
+                min = 0,
+                step = 100
+              )
+            )
+          ),
+          tags$hr()
         ),
-        tags$hr(),
+        
+        uiOutput("interventionStrategiesUI")
       ),
-      uiOutput("interventionStrategiesUI"),
+      
+      br(),
+      
+      div(
+        class = "no-pdf",
+        style = "display: flex; justify-content: flex-start; margin-top: 20px;",
+        
+        actionButton(
+          "downloadTreatmentPDF",
+          "Download the results as PDF",
+          class = "btn btn-success no-pdf",
+          onclick = "downloadSectionAsPDF('treatment_pdf_section', 'treatment_strategies')"
+        )
+      ),
+      
+      br(),
+      
       tagList(
         tags$style(HTML("
-    .btn-blue-1 { background-color:#0B2E4B; border-color:#0B2E4B; color:#fff; }
-    .btn-blue-2 { background-color:#0D47A1; border-color:#0D47A1; color:#fff; }
-    .btn-blue-3 { background-color:#1976D2; border-color:#1976D2; color:#fff; }
-    .btn-blue-4 { background-color:#64B5F6; border-color:#64B5F6; color:#0B2E4B; }
-    .btn-blue-5 { background-color:#BBDEFB; border-color:#BBDEFB; color:#0B2E4B; }
+      .btn-blue-1 { background-color:#0B2E4B; border-color:#0B2E4B; color:#fff; }
+      .btn-blue-2 { background-color:#0D47A1; border-color:#0D47A1; color:#fff; }
+      .btn-blue-3 { background-color:#1976D2; border-color:#1976D2; color:#fff; }
+      .btn-blue-4 { background-color:#64B5F6; border-color:#64B5F6; color:#0B2E4B; }
+      .btn-blue-5 { background-color:#BBDEFB; border-color:#BBDEFB; color:#0B2E4B; }
 
-    .btn-blue-1:hover, .btn-blue-2:hover, .btn-blue-3:hover, .btn-blue-4:hover, .btn-blue-5:hover {
-      filter: brightness(0.95);
-    }
-  ")),
+      .btn-blue-1:hover, .btn-blue-2:hover, .btn-blue-3:hover, .btn-blue-4:hover, .btn-blue-5:hover {
+        filter: brightness(0.95);
+      }
+    ")),
         
         fluidRow(
           column(
@@ -1210,7 +1519,9 @@ server <- function(input, output, session){
       cov_label <- if (!is.null(input[[paste0("desc_", cov)]])) input[[paste0("desc_", cov)]] else cov
       
       # UI block for each covariate 
-      cov_box <- wellPanel(
+      cov_box <-  div(
+        class = "pdf-block",
+        wellPanel(
         style = "background-color: transparent; border: 1px solid #dee2e6; padding: 15px; border-radius: 8px;",
         h5(strong(paste("Hazard Ratios of", cov_label))),
         fluidRow(
@@ -1234,7 +1545,7 @@ server <- function(input, output, session){
             )
           )
         )
-      )
+      ))
       
       ui_list[[length(ui_list)+1]] <- cov_box
       
@@ -1439,7 +1750,9 @@ server <- function(input, output, session){
           default_haz  <- if (!is.null(fit_local)) fit_local$hazards else rep(0.01, length(default_cuts) - 1)
           
           # UI container
-          ui_list[[length(ui_list) + 1]] <<- fluidRow(
+          ui_list[[length(ui_list) + 1]] <<- div(
+            class = "pdf-block",
+            fluidRow(
             column(
               width = 4,
               h5(strong(paste("Transition", tr_labels()[tr_local]))),
@@ -1458,7 +1771,7 @@ server <- function(input, output, session){
             ),
             column(width = 8, plotOutput(paste0("piecewise_plot_", tr_local), height = "300px")),
             tags$div(style = "height:30px;")
-          )
+          ))
           
           # Dynamic inputs
           output[[paste0("interval_inputs_", tr_local)]] <- renderUI({
@@ -1642,7 +1955,9 @@ server <- function(input, output, session){
           else NULL
           
           # Layout
-          ui_list[[length(ui_list) + 1]] <<- fluidRow(
+          ui_list[[length(ui_list) + 1]] <<- div(
+            class = "pdf-block",
+            fluidRow(
             column(
               width = 4,
               h5(strong(paste("Transition", tr_labels()[tr_local]))),
@@ -1654,7 +1969,7 @@ server <- function(input, output, session){
             ),
             column(width = 8, plotOutput(paste0("spline_plot_", tr_local), height = "300px")),
             tags$div(style = "height:30px;")
-          )
+          ))
           
           # Reactive inputs for plotting 
           gamma_vals_re <- reactive({
@@ -1743,11 +2058,20 @@ server <- function(input, output, session){
     }
     
     ui_list[[length(ui_list) + 1]] <- div(
-      style = "text-align:right; margin-top:30px;",
+      class = "no-pdf",
+      style = "display: flex; justify-content: space-between; margin-top:30px;",
+      
+      actionButton(
+        "downloadBaselinePDF",
+        "Download the results as PDF",
+        class = "btn btn-success no-pdf",
+        onclick = "downloadSectionAsPDF('baseline_pdf_section', 'baseline_hazard_functions')"
+      ),
+      
       actionButton(
         "goToMicrosimulation",
         "Next: Treatment Strategies",
-        class = "btn btn-primary"
+        class = "btn btn-primary no-pdf"
       )
     )
     
@@ -1880,18 +2204,17 @@ server <- function(input, output, session){
       tags$hr(),
       h4("Step 2: Define Covariate Values for Each Treatment Transition"),
       helpText("For non-shared covariates, specify their values for each treatment transition."),
-      uiOutput("transitionCovariateInputs"),
       if (input$has_data=="no"){
-        helpText("One bar
-shows an RMST; an error bar indicates \\(\\pm 1\\) standard deviation truncated at 0 and the prespecified time horizon.")
+        helpText("An error bar indicates \\(\\pm 1\\) standard deviation truncated at 0 and the prespecified time horizon.")
       }else if (input$has_data=="yes"){
-        helpText("One bar
-shows an RMST; an error bar indicates its 95% confidence interval.")
+        helpText("An error bar indicates the 95% confidence interval.")
       },
+      helpText("The no-treatment strategy is defined as the continuation of the current care path without incorporating the treatment under consideration."),
+      uiOutput("transitionCovariateInputs"),
       br(),
       div(
         style = "text-align:center;",
-        actionButton("run_all_transitions", "Run microsimulation for all treatment transitions", class = "btn btn-success")
+        actionButton("run_all_transitions", "Run microsimulation for all treatment transitions", class = "btn btn-success no-pdf")
       ),
       br()
     )
@@ -2007,6 +2330,8 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
         
         column(
           width = 12,
+          div(
+            class = "pdf-block",
           wellPanel(
             style = "background-color:#ffffff; border:1px solid #dee2e6; border-radius:8px; padding:18px; margin-bottom:25px;",
             
@@ -2022,7 +2347,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
                   actionButton(
                     paste0("run_tr_", tr),
                     "Run microsimulation",
-                    class = "btn btn-primary btn-sm"
+                    class = "btn btn-primary no-pdf"
                   )
                 )
               ),
@@ -2032,11 +2357,11 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
                 h5("Treatment strategy outcomes"),
                 plotOutput(
                   paste0("microsimPlot_", tr),
-                  width = "250px"
+                  height = "250px"
                 )
               )
             )
-          )
+          ))
         )
       })
       fluidRow(cols)
@@ -2582,7 +2907,7 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
         coord_cartesian(clip = "off") +
         theme_minimal(base_size = 14) +
         labs(
-          title = "Restricted Mean Survival Time",
+          title = paste("Treatment at state", edges()[tr_active, "from"]),
           x = NULL,
           y = "Restricted Mean Survival Time",
           fill = ""
@@ -2630,8 +2955,9 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
         geom_point(size = 2.0) +
         geom_text(
           aes(label = scales::number(rmst_diff, accuracy = 0.01)),
-          nudge_y = 0.05 * max_abs_diff,
-          size = 4
+          nudge_y = 0.05*max_abs_diff,
+          nudge_x = 0.1,
+          size = 5
         ) +
         coord_cartesian(clip = "off") +
         theme_minimal(base_size = 14) +
@@ -2681,7 +3007,6 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
     cat("\n✅ All microsimulations completed.\n")
   }, ignoreInit = TRUE)
   
-  
   tx_observers <- reactiveVal(list())
   
   observeEvent(tx_trans(), {
@@ -2717,7 +3042,6 @@ shows an RMST; an error bar indicates its 95% confidence interval.")
     })
     tx_observers(new_obs)
   }, ignoreInit = FALSE)
-  
   
   observeEvent(input$reset_all, {
     updateTabsetPanel(
