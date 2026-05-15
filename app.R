@@ -1787,7 +1787,7 @@ server <- function(input, output, session){
             xlab = "Time",
             ylab = "Baseline cumulative hazard",
             ylim = c(0, ymax_H),
-            main = paste0("Transition ", tr_local, ": cumulative hazard")
+            main = paste0("Transition ", tr_local, ": Baseline cumulative hazard")
           )
           lines(df_cmp$time, df_cmp$cumhaz, lwd = 2, col = "darkred", lty = 2)
           legend(
