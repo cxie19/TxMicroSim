@@ -653,6 +653,40 @@ ui <- fluidPage(
                        
                        uiOutput("baseline_hazards_inputs")
                      )
+                   ),
+                   tabPanel(
+                     "Comparison: Baseline Hazard Functions",
+                     
+                     div(
+                       id = "baseline_comparison_pdf_section",
+                       
+                       h4("Comparison of Estimated Baseline Hazard Functions"),
+                       h5(tags$i(
+                         "This section compares the estimated baseline hazard functions from the selected baseline-hazard model with those from the alternative baseline-hazard model."
+                       )),
+                       
+                       uiOutput("baseline_comparison_inputs")
+                     ),
+                     
+                     br(),
+                     
+                     div(
+                       class = "no-pdf",
+                       style = "display: flex; justify-content: space-between; margin-top:30px;",
+                       
+                       actionButton(
+                         "downloadBaselineComparisonPDF",
+                         "Download the comparison as PDF",
+                         class = "btn btn-success no-pdf",
+                         onclick = "downloadSectionAsPDF('baseline_comparison_pdf_section', 'baseline_hazard_comparison')"
+                       ),
+                       
+                       actionButton(
+                         "goToMicrosimulation",
+                         "Next: Treatment Strategies",
+                         class = "btn btn-primary no-pdf"
+                       )
+                     )
                    )
                  ),
         )
@@ -1452,6 +1486,351 @@ server <- function(input, output, session){
     fits
   })
   
+  baseline_model_label <- reactive({
+    req(input$baseline_hazard)
+    
+    switch(
+      input$baseline_hazard,
+      "piecewise" = "piecewise constant baseline hazard function",
+      "spline"    = "natural cubic spline baseline hazard function"
+    )
+  })
+  
+  comparison_model_label <- reactive({
+    req(input$baseline_hazard)
+    
+    switch(
+      input$baseline_hazard,
+      "piecewise" = "natural cubic spline baseline hazard function",
+      "spline"    = "piecewise constant baseline hazard function"
+    )
+  })
+  
+  comparison_baseline_hazard <- reactive({
+    req(input$baseline_hazard)
+    if (input$baseline_hazard == "piecewise") "spline" else "piecewise"
+  })
+  
+  output$compare_baseline_question <- renderUI({
+    req(input$baseline_hazard)
+    
+    p(
+      paste0(
+        "Would you like to compare the estimated ",
+        baseline_model_label(),
+        " with the estimated ",
+        comparison_model_label(),
+        "?"
+      )
+    )
+  })
+  
+  get_assigned_covs_for_transition <- function(tr) {
+    unlist(savedCovs()[sapply(savedTrns(), function(x) tr %in% x)])
+  }
+  
+  fit_one_transition_model <- function(df_tr, assign_covs, model_type,
+                                       max_intervals = NULL,
+                                       num_events = NULL,
+                                       max_time = NULL) {
+    
+    if (length(assign_covs) == 0) {
+      formula_str <- "Surv(time, status) ~ 1"
+    } else {
+      formula_str <- paste("Surv(time, status) ~", paste(assign_covs, collapse = " + "))
+    }
+    
+    f <- as.formula(formula_str)
+    
+    if (model_type == "piecewise") {
+      req(max_intervals, num_events, max_time)
+      
+      cuts <- make_event_intervals(
+        df_tr,
+        num_events,
+        max_intervals,
+        ceiling(max_time)
+      )
+      
+      fit <- tryCatch(
+        eha::pchreg(f, data = df_tr, cuts = cuts),
+        error = function(e) {
+          cat("Comparison piecewise fit error:", e$message, "\n")
+          NULL
+        }
+      )
+      
+    } else if (model_type == "spline") {
+      
+      fit <- tryCatch(
+        fit_flexsurvspline(df_tr, covariates = assign_covs),
+        error = function(e) {
+          cat("Comparison spline fit error:", e$message, "\n")
+          NULL
+        }
+      )
+      
+    } else {
+      fit <- NULL
+    }
+    
+    fit
+  }
+  
+  comparisonModelsRV <- eventReactive(input$goToBaselineComparison, {
+    req(input$has_data == "yes")
+    req(input$compare_baseline == "yes")
+    req(dat())
+    
+    cmp_model <- comparison_baseline_hazard()
+    fits_comparison <- list()
+    
+    withProgress(
+      message = paste("Fitting comparison baseline-hazard model:", cmp_model),
+      value = 0,
+      {
+        n <- length(non_tx_trans())
+        
+        for (j in seq_along(non_tx_trans())) {
+          tr <- non_tx_trans()[j]
+          incProgress(1 / n, detail = paste("Fitting comparison model for transition", tr))
+          
+          df_tr <- subset(dat(), trans == as.integer(tr))
+          if (nrow(df_tr) == 0) next
+          
+          assign_covs <- get_assigned_covs_for_transition(tr)
+          
+          if (cmp_model == "piecewise") {
+            fit_comparison <- fit_one_transition_model(
+              df_tr = df_tr,
+              assign_covs = assign_covs,
+              model_type = "piecewise",
+              max_intervals = input$cmp_max_intervals,
+              num_events = input$cmp_num_events,
+              max_time = max(dat()$time, na.rm = TRUE)
+            )
+          } else {
+            fit_comparison <- fit_one_transition_model(
+              df_tr = df_tr,
+              assign_covs = assign_covs,
+              model_type = "spline"
+            )
+          }
+          
+          if (!is.null(fit_comparison)) fits_comparison[[as.character(tr)]] <- fit_comparison
+        }
+      }
+    )
+    
+    fits_comparison
+  })
+  
+  get_piecewise_curve <- function(fit, times) {
+    cuts <- fit$cuts
+    haz <- fit$hazards
+    
+    h <- sapply(times, function(t) {
+      idx <- findInterval(t, cuts, rightmost.closed = TRUE)
+      idx <- max(1, min(idx, length(haz)))
+      haz[idx]
+    })
+    
+    H <- sapply(times, function(t) {
+      total <- 0
+      for (i in seq_along(haz)) {
+        left <- cuts[i]
+        right <- cuts[i + 1]
+        
+        if (t > left) {
+          total <- total + haz[i] * max(0, min(t, right) - left)
+        }
+      }
+      total
+    })
+    
+    data.frame(time = times, hazard = h, cumhaz = H)
+  }
+  
+  get_spline_curve <- function(fit, times) {
+    gammas <- coef(fit)[grep("gamma", names(coef(fit)))]
+    knots <- fit$knots
+    
+    logH_fun <- function(gammas, time, knots) {
+      if (is.null(knots) || length(knots) < 2) return(NA_real_)
+      
+      lowest.knot <- knots[1]
+      highest.knot <- knots[length(knots)]
+      if (!is.finite(lowest.knot) || !is.finite(highest.knot) || lowest.knot == highest.knot) {
+        return(NA_real_)
+      }
+      
+      bfun <- function(time, knot) {
+        tlog <- log(time)
+        hk <- highest.knot
+        lk <- lowest.knot
+        denom <- hk - lk
+        
+        t1 <- pmax(0, tlog - knot)^3
+        t2 <- (hk - knot) * pmax(0, tlog - lk)^3 / denom
+        t3 <- (knot - lk) * pmax(0, tlog - hk)^3 / denom
+        
+        as.numeric(t1 - t2 - t3)
+      }
+      
+      bvalue <- if (length(knots) > 2) {
+        sapply(knots[2:(length(knots) - 1)], function(x) bfun(time, x))
+      } else {
+        numeric(0)
+      }
+      
+      basis <- c(1, log(time), bvalue)
+      if (length(gammas) != length(basis)) return(NA_real_)
+      
+      as.numeric(gammas %*% basis)
+    }
+    
+    logH <- sapply(times, function(t) logH_fun(gammas, t, knots))
+    H <- exp(logH)
+    h <- c(diff(H) / diff(times), NA_real_)
+    
+    data.frame(time = times, hazard = h, cumhaz = H)
+  }
+  
+  get_baseline_curve <- function(fit, model_type, times) {
+    if (model_type == "piecewise") {
+      get_piecewise_curve(fit, times)
+    } else {
+      get_spline_curve(fit, times)
+    }
+  }
+  
+  output$baseline_comparison_inputs <- renderUI({
+    req(input$has_data == "yes")
+    req(input$compare_baseline == "yes")
+    req(fittedModelsRV())
+    req(comparisonModelsRV())
+    
+    selected_model <- input$baseline_hazard
+    comparison_model <- comparison_baseline_hazard()
+    
+    ui_list <- list()
+    
+    ui_list[[length(ui_list) + 1]] <- div(
+      class = "box",
+      h4("Models being compared"),
+      tags$ul(
+        tags$li(strong("Selected main model: "), baseline_model_label()),
+        tags$li(strong("Alternative comparison model: "), comparison_model_label())
+      )
+    )
+    
+    for (tr in non_tx_trans()) {
+      local({
+        tr_local <- tr
+        
+        ui_list[[length(ui_list) + 1]] <<- div(
+          class = "pdf-block",
+          wellPanel(
+            style = "background-color:#ffffff; border:1px solid #dee2e6; border-radius:8px; padding:18px; margin-bottom:25px;",
+            h5(strong(paste("Transition", tr_labels()[tr_local]))),
+            plotOutput(paste0("baseline_comparison_plot_", tr_local), height = "360px")
+          )
+        )
+        
+        output[[paste0("baseline_comparison_plot_", tr_local)]] <- renderPlot({
+          req(input$baseline_xmax)
+          
+          main_fits <- fittedModelsRV()
+          cmp_fits <- comparisonModelsRV()
+          
+          main_fit <- main_fits[[as.character(tr_local)]]
+          cmp_fit <- cmp_fits[[as.character(tr_local)]]
+          
+          if (is.null(main_fit) || is.null(cmp_fit)) return(NULL)
+          
+          times <- seq(0.1, input$baseline_xmax, length.out = 300)
+          
+          df_main <- get_baseline_curve(main_fit, selected_model, times)
+          df_cmp <- get_baseline_curve(cmp_fit, comparison_model, times)
+          
+          ymax_h <- suppressWarnings(as.numeric(input$baseline_ymax_h))
+          ymax_H <- suppressWarnings(as.numeric(input$baseline_ymax_H))
+          if (!is.finite(ymax_h)) ymax_h <- max(c(df_main$hazard, df_cmp$hazard), na.rm = TRUE)
+          if (!is.finite(ymax_H)) ymax_H <- max(c(df_main$cumhaz, df_cmp$cumhaz), na.rm = TRUE)
+          
+          par(mfrow = c(1, 2))
+          
+          plot(
+            df_main$time, df_main$hazard,
+            type = "l", lwd = 2, col = "darkblue",
+            xlab = "Time",
+            ylab = "Baseline hazard function",
+            ylim = c(0, ymax_h),
+            main = paste0("Transition ", tr_local, ": baseline hazard")
+          )
+          lines(df_cmp$time, df_cmp$hazard, lwd = 2, col = "darkred", lty = 2)
+          legend(
+            "topright",
+            legend = c(
+              paste0("Selected: ", selected_model),
+              paste0("Comparison: ", comparison_model)
+            ),
+            col = c("darkblue", "darkred"),
+            lty = c(1, 2),
+            lwd = 2,
+            bty = "n"
+          )
+          
+          plot(
+            df_main$time, df_main$cumhaz,
+            type = "l", lwd = 2, col = "darkblue",
+            xlab = "Time",
+            ylab = "Baseline cumulative hazard",
+            ylim = c(0, ymax_H),
+            main = paste0("Transition ", tr_local, ": cumulative hazard")
+          )
+          lines(df_cmp$time, df_cmp$cumhaz, lwd = 2, col = "darkred", lty = 2)
+          legend(
+            "topright",
+            legend = c(
+              paste0("Selected: ", selected_model),
+              paste0("Comparison: ", comparison_model)
+            ),
+            col = c("darkblue", "darkred"),
+            lty = c(1, 2),
+            lwd = 2,
+            bty = "n"
+          )
+          
+          par(mfrow = c(1, 1))
+        })
+      })
+    }
+    
+    do.call(tagList, ui_list)
+  })
+  
+  observeEvent(input$goToBaselineComparison, {
+    req(input$has_data == "yes")
+    req(input$compare_baseline == "yes")
+    
+    comparisonModelsRV()
+    
+    updateTabsetPanel(
+      session,
+      inputId = "param_spec",
+      selected = "Comparison: Baseline Hazard Functions"
+    )
+  })
+  
+  observeEvent(input$goToMicrosimulation, {
+    updateNavlistPanel(
+      session,
+      inputId = "tabs",
+      selected = "Treatment Strategies"
+    )
+  })
+  
   observeEvent(input$has_data, {
     req(rv_gate$model_ready)
     if (input$has_data == "no") {
@@ -2059,19 +2438,81 @@ server <- function(input, output, session){
     
     ui_list[[length(ui_list) + 1]] <- div(
       class = "no-pdf",
-      style = "display: flex; justify-content: space-between; margin-top:30px;",
+      style = "margin-top:30px;",
       
-      actionButton(
-        "downloadBaselinePDF",
-        "Download the results as PDF",
-        class = "btn btn-success no-pdf",
-        onclick = "downloadSectionAsPDF('baseline_pdf_section', 'baseline_hazard_functions')"
+      div(
+        style = "display: flex; justify-content: flex-start; margin-bottom:20px;",
+        actionButton(
+          "downloadBaselinePDF",
+          "Download the results as PDF",
+          class = "btn btn-success no-pdf",
+          onclick = "downloadSectionAsPDF('baseline_pdf_section', 'baseline_hazard_functions')"
+        )
       ),
       
-      actionButton(
-        "goToMicrosimulation",
-        "Next: Treatment Strategies",
-        class = "btn btn-primary no-pdf"
+      conditionalPanel(
+        condition = "input.has_data == 'yes'",
+        
+        div(
+          class = "box",
+          h4("Baseline hazard model comparison"),
+          uiOutput("compare_baseline_question"),
+          
+          radioButtons(
+            inputId = "compare_baseline",
+            label = NULL,
+            choices = c("Yes" = "yes", "No" = "no"),
+            selected = character(0),
+            inline = TRUE
+          ),
+          
+          conditionalPanel(
+            condition = "input.compare_baseline == 'yes' && input.baseline_hazard == 'spline'",
+            helpText("Please specify the interval settings for the comparison piecewise constant function."),
+            numericInput(
+              "cmp_max_intervals",
+              "Maximum number of intervals:",
+              value = 20, min = 1, max = 20, step = 1
+            ),
+            numericInput(
+              "cmp_num_events",
+              "Number of events in each interval:",
+              value = 20, min = 20, step = 1
+            )
+          ),
+          
+          conditionalPanel(
+            condition = "input.compare_baseline == 'yes' && input.baseline_hazard == 'piecewise'",
+            helpText("Because the selected main model is the piecewise constant model, the comparison model will be the natural cubic spline model.")
+          ),
+          
+          conditionalPanel(
+            condition = "input.compare_baseline == 'yes'",
+            actionButton(
+              "goToBaselineComparison",
+              "Next: Compare Baseline Hazard Functions",
+              class = "btn btn-primary no-pdf"
+            )
+          ),
+          
+          conditionalPanel(
+            condition = "input.compare_baseline == 'no'",
+            actionButton(
+              "goToMicrosimulation",
+              "Next: Treatment Strategies",
+              class = "btn btn-primary no-pdf"
+            )
+          )
+        )
+      ),
+      
+      conditionalPanel(
+        condition = "input.has_data == 'no'",
+        actionButton(
+          "goToMicrosimulation",
+          "Next: Treatment Strategies",
+          class = "btn btn-primary no-pdf"
+        )
       )
     )
     
@@ -2149,7 +2590,7 @@ server <- function(input, output, session){
   observeEvent(input$goToMicrosimulation, {
     updateNavlistPanel(
       session,
-      inputId = "tabs",   # the id of your tabsetPanel/navlistPanel
+      inputId = "tabs",   
       selected = "Treatment Strategies"
     )
   })
