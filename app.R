@@ -970,6 +970,12 @@ server <- function(input, output, session){
   rv2_1$firstTransformed <- NULL  # the frozen, first transformed dataset
   rv2_1$extraList <- list()  # list of added transformed datasets
   rv2_1$combined <- reactiveVal(NULL)    # view that shows first + extras
+  rv2_1$datasetNames <- reactiveVal(character(0))
+  rv2_1$datasetFileNames <- reactiveVal(character(0))
+  rv2_1$sourceDataByTrans <- reactiveVal(list())
+  rv2_1$dataSourceDummyVars <- reactiveVal(character(0))
+  rv2_1$lastExtraTransitions <- reactiveVal(character(0))
+  rv2_1$showAddDataPanel <- reactiveVal(FALSE)
   
   # covariate assignment
   rv2_2 <- reactiveValues()
@@ -1013,22 +1019,106 @@ server <- function(input, output, session){
     contentType = "text/csv"
   )
   
+  clean_dataset_name <- function(x, default_name, existing = character(0)) {
+    x <- trimws(x %||% "")
+    if (identical(x, "")) x <- default_name
+    x <- gsub("[^A-Za-z0-9_]+", "_", x)
+    x <- gsub("^_+|_+$", "", x)
+    if (identical(x, "")) x <- default_name
+    if (!grepl("^[A-Za-z]", x)) x <- paste0("data_", x)
+    make.unique(c(existing, x), sep = "_")[length(existing) + 1L]
+  }
+  
+  make_data_source_dummy_name <- function(dataset_name) {
+    ds <- gsub("[^A-Za-z0-9_]+", "_", dataset_name)
+    ds <- gsub("^_+|_+$", "", ds)
+    paste0("data_source_", ds)
+  }
+  
+  get_multi_source_transition_df <- function(data = rv2_1$combined()) {
+    if (is.null(data) || !"data_source" %in% names(data) || !"trans" %in% names(data)) {
+      return(data.frame(trans = integer(), data_source = character(), stringsAsFactors = FALSE))
+    }
+    src_df <- unique(data[, c("trans", "data_source"), drop = FALSE])
+    src_df <- src_df[!is.na(src_df$trans) & !is.na(src_df$data_source), , drop = FALSE]
+    multi_trans <- names(which(table(src_df$trans) > 1))
+    src_df[src_df$trans %in% multi_trans, , drop = FALSE]
+  }
+  
+  source_choice_labels <- function(dataset_names) {
+    file_names <- rv2_1$datasetFileNames() %||% character(0)
+    display <- vapply(dataset_names, function(ds) {
+      fn <- unname(file_names[ds])
+      if (length(fn) == 1L && !is.na(fn) && nzchar(fn)) paste0(ds, " (", fn, ")") else ds
+    }, character(1))
+    setNames(dataset_names, display)
+  }
+  
+  apply_data_source_dummies <- function() {
+    data <- rv2_1$combined()
+    if (is.null(data)) return(NULL)
+    
+    old_dummy_vars <- grep("^data_source_", names(data), value = TRUE)
+    if (length(old_dummy_vars)) data[old_dummy_vars] <- NULL
+    
+    multi_src_df <- get_multi_source_transition_df(data)
+    dummy_vars <- character(0)
+    source_map <- list()
+    
+    if (nrow(multi_src_df) > 0) {
+      ds_choices <- rv2_1$datasetNames() %||% unique(as.character(data$data_source))
+      ds_choices <- ds_choices[ds_choices %in% unique(as.character(data$data_source))]
+      default_source <- if (length(ds_choices)) ds_choices[1] else NA_character_
+      source_selected <- input$source_data_global %||% default_source
+      if (!source_selected %in% ds_choices) source_selected <- default_source
+      source_map[["source"]] <- source_selected
+      
+      aux_sources <- setdiff(ds_choices, source_selected)
+      for (aux in aux_sources) {
+        dummy_name <- make_data_source_dummy_name(aux)
+        data[[dummy_name]] <- as.integer(data$data_source == aux)
+        dummy_vars <- c(dummy_vars, dummy_name)
+      }
+    }
+    
+    rv2_1$sourceDataByTrans(source_map)
+    rv2_1$dataSourceDummyVars(dummy_vars)
+    rv2_1$combined(data)
+    invisible(data)
+  }
+  
   output$uploadData <- renderUI({
     transition_labels <- paste0(edges()$from, " \u2192 ", edges()$to)
     
     tagList(
       fluidRow(
         column(
-          width = 5,
+          width = 3,
           checkboxGroupInput(
             "transitionSelect_first",
             "Assign to transition(s):",
             choices = c(transition_labels),
             inline = FALSE
           )
+        ),
+        column(
+          width = 4,
+          textInput(
+            "datasetName_first",
+            "Dataset name:",
+            value = "data0",
+            placeholder = "data0"
+          )
+        ),
+        column(
+          width = 5,
+          fileInput(
+            "dataFile",
+            "Upload your dataset (CSV)",
+            accept = ".csv"
+          )
         )
       ),
-      fileInput("dataFile", "Upload your dataset (CSV)", accept = ".csv"),
       DTOutput("uploadedDataDT", height = "400px")
     )
   })
@@ -1109,13 +1199,24 @@ server <- function(input, output, session){
     target_trans_first <- label_df$trans[label_df$label %in% input$transitionSelect_first]
     msdata <- msdata[msdata$trans%in%target_trans_first,]
     
+    dataset_name <- clean_dataset_name(input$datasetName_first, "data0")
+    updateTextInput(session, "datasetName_first", value = dataset_name)
+    msdata$data_source <- dataset_name
+    
     # Save the first dataset's transformed data (frozen)
     rv2_1$firstTransformed <- msdata
+    rv2_1$extraList <- list()
+    rv2_1$datasetNames(dataset_name)
+    rv2_1$datasetFileNames(setNames(input$dataFile$name, dataset_name))
+    rv2_1$sourceDataByTrans(list())
+    rv2_1$dataSourceDummyVars(character(0))
+    rv2_1$lastExtraTransitions(character(0))
+    rv2_1$showAddDataPanel(FALSE)
     # Initialize the combined view as the first dataset
     rv2_1$combined(msdata)
     
     # Display transformed data
-    output$msdataTitle <- renderUI(h4("Transformed dataset for multistate modeling (First dataset)"))
+    output$msdataTitle <- renderUI(h4(paste0("Transformed dataset for multistate modeling (", dataset_name, ")")))
     output$msdataDT <- renderDT({
       req(rv2_1$firstTransformed)
       datatable(rv2_1$firstTransformed, options = list(scrollX = TRUE, scrollY = 300))
@@ -1135,63 +1236,129 @@ server <- function(input, output, session){
       tagList(
         br(),
         actionButton("addDataBtn", "Add one more data for specific transition(s)", class = "btn-primary"),
-        conditionalPanel(
-          condition = "input.addDataBtn > 0",
-          uiOutput("addDataUI"),
-          uiOutput("combinedDataTitle"),
-          DTOutput("combinedDataDT", height = "400px"),
-          fluidRow(
-            column(
-              width = 6,
-              uiOutput("combinedCountTitle"),
-              DTOutput("combinedCountDT")
-            )
-          ),
-          br(),br(),
-          h4("If there is more dataset to be uploaded, please scroll up for the button to add more dataset.")
-        )
+        uiOutput("addDataPanelUI")
       )
     })
   })
   
-  # Add one more data 
-  observeEvent(input$addDataBtn, {
-    
-    output$addDataUI <- renderUI({
+  output$addDataPanelUI <- renderUI({
+    if (!isTRUE(rv2_1$showAddDataPanel())) return(NULL)
+
+    tagList(
+      uiOutput("addDataUI"),
+      uiOutput("combinedDataTitle"),
+      DTOutput("combinedDataDT", height = "400px"),
       fluidRow(
         column(
-          width = 5,
-          checkboxGroupInput(
-            "transitionSelect",
-            "Assign to transition(s):",
-            choices = paste0(edges()$from, " → ", edges()$to), 
-            inline = FALSE
+          width = 6,
+          uiOutput("combinedCountTitle"),
+          DTOutput("combinedCountDT")
+        )
+      ),
+      br(), br(),
+      h4("If there is more dataset to be uploaded, please scroll up for the button to add more dataset."),
+      uiOutput("sourceDataQuestionUI")
+    )
+  })
+
+  output$sourceDataQuestionUI <- renderUI({
+    multi_src_df <- get_multi_source_transition_df()
+    if (nrow(multi_src_df) == 0) return(NULL)
+    
+    transition_ids <- sort(unique(as.integer(multi_src_df$trans)))
+    transition_text <- paste(tr_labels()[as.character(transition_ids)], collapse = "; ")
+    ds_choices <- rv2_1$datasetNames() %||% unique(as.character(rv2_1$combined()$data_source))
+    ds_choices <- ds_choices[ds_choices %in% unique(as.character(rv2_1$combined()$data_source))]
+    
+    div(
+      style = "margin-top: 15px; padding: 12px; border: 1px solid #ddd; border-radius: 6px; background-color: #f9f9f9;",
+      h4("Source dataset for data-source adjustment"),
+      p(paste0("The following transition(s) will be modeled using more than one dataset: ", transition_text, ".")),
+      p("Please identify which dataset is the source/main data, not auxiliary data. The selected source dataset will be used as the reference level when creating dummy variables for data_source."),
+      radioButtons(
+        inputId = "source_data_global",
+        label = "Which dataset is the source/main data?",
+        choices = source_choice_labels(ds_choices),
+        selected = character(0)
+      )
+    )
+  })
+  
+  # Add one more data 
+  observeEvent(input$addDataBtn, {
+    rv2_1$showAddDataPanel(TRUE)
+    
+    output$addDataUI <- renderUI({
+      tagList(
+        
+        # ---- First row: transition + dataset name + file upload ----
+        fluidRow(
+          column(
+            width = 3,
+            checkboxGroupInput(
+              "transitionSelect",
+              "Assign to transition(s):",
+              choices = paste0(edges()$from, " → ", edges()$to),
+              selected = isolate(rv2_1$lastExtraTransitions() %||% character(0)),
+              inline = FALSE
+            )
+          ),
+          
+          column(
+            width = 4,
+            textInput(
+              "datasetName_extra",
+              "Dataset name:",
+              value = isolate(paste0("data", length(rv2_1$datasetNames() %||% character(0)))),
+              placeholder = "data1"
+            )
+          ),
+          
+          column(
+            width = 5,
+            fileInput(
+              "extraDataFile",
+              "Upload an additional dataset (CSV) with the same column names as the previous one",
+              accept = ".csv"
+            )
           )
         ),
-        column(
-          width = 4,
-          fileInput(
-            "extraDataFile",
-            "Upload an additional dataset (CSV) with the same column names as the previous one",
-            accept = ".csv"
-          )
-        ),
-        column(
-          width = 3,
-          div(
-            style = "margin-top: 25px;",
-            actionButton("combineBtn", "Combine this dataset", class = "btn-success")
+        
+        # ---- Second row: combine button at rightmost bottom ----
+        fluidRow(
+          column(
+            width = 12,
+            div(
+              style = "
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 8px;
+            margin-bottom: 10px;
+          ",
+              actionButton(
+                "combineBtn",
+                "Combine this dataset",
+                class = "btn-success"
+              )
+            )
           )
         )
       )
     })
   })
+
+  observeEvent(input$transitionSelect, {
+    rv2_1$lastExtraTransitions(input$transitionSelect %||% character(0))
+  }, ignoreInit = TRUE)
+
   
   #  Combine handler 
   observeEvent(input$combineBtn, {
     # 
     req(rv2_1$firstTransformed, input$extraDataFile, input$transitionSelect)
     
+    rv2_1$lastExtraTransitions(input$transitionSelect %||% character(0))
+
     df_extra <- read.csv(input$extraDataFile$datapath, check.names = FALSE)
     
     id_col      <- resolve_single_ci(names(df_extra), "id")
@@ -1227,13 +1394,24 @@ server <- function(input, output, session){
     }
     msdata_extra <- msdata_extra[msdata_extra$trans%in%target_trans,]
     
+    existing_names <- rv2_1$datasetNames() %||% character(0)
+    default_extra_name <- paste0("data", length(existing_names))
+    dataset_name <- clean_dataset_name(input$datasetName_extra, default_extra_name, existing = existing_names)
+    updateTextInput(session, "datasetName_extra", value = dataset_name)
+    msdata_extra$data_source <- dataset_name
+    
     # Append and rebuild combined from the frozen first dataset
     rv2_1$extraList[[length(rv2_1$extraList) + 1]] <- msdata_extra
+    rv2_1$datasetNames(c(existing_names, dataset_name))
+    file_names <- rv2_1$datasetFileNames() %||% character(0)
+    rv2_1$datasetFileNames(c(file_names, setNames(input$extraDataFile$name, dataset_name)))
+    rv2_1$sourceDataByTrans(list())
+    rv2_1$dataSourceDummyVars(character(0))
     combined_data <- dplyr::bind_rows(c(list(rv2_1$firstTransformed), rv2_1$extraList))
     rv2_1$combined(combined_data)
     
     # Update combined displays
-    output$combinedDataTitle <- renderUI(h4("Combined dataset (first + added)"))
+    output$combinedDataTitle <- renderUI(h4("Combined dataset with data_source column"))
     output$combinedDataDT <- renderDT({
       datatable(rv2_1$combined(), options = list(scrollX = TRUE, scrollY = 300))
     })
@@ -1248,12 +1426,34 @@ server <- function(input, output, session){
                 options = list(scrollX = TRUE, paging = FALSE, dom = "t"))
     })
     
-    showNotification(paste("✅ Added data for:", paste(input$transitionSelect, collapse = ", ")),
+    showNotification(paste("✅ Added", dataset_name, "for:", paste(input$transitionSelect, collapse = ", ")),
                      type = "message")
     
   })
   
   observeEvent(input$goToCovars, {
+    # Each time the user enters Covariate Assignment from the Dataset step,
+    # start all covariate selectors blank. Transition selections are not reset.
+    rv2_2$blockCovNamesRV(list())
+    block_count <- rv2_2$blockCountRV() %||% 1
+    for (i in seq_len(block_count)) {
+      updateSelectizeInput(
+        session,
+        inputId = paste0("covars_block_", i),
+        selected = character(0)
+      )
+    }
+    
+    if (identical(input$has_data, "yes") && !is.null(rv2_1$combined())) {
+      apply_data_source_dummies()
+      if (length(rv2_1$dataSourceDummyVars()) > 0) {
+        showNotification(
+          paste("Created data-source dummy variable(s):",
+                paste(rv2_1$dataSourceDummyVars(), collapse = ", ")),
+          type = "message"
+        )
+      }
+    }
     updateNavlistPanel(
       session,
       inputId = "multi_fit",   
@@ -1345,13 +1545,16 @@ server <- function(input, output, session){
       # Covariate input depends on has_data
       if (input$has_data == "yes" && !is.null(dat())) {
         all_vars <- names(dat())
-        excluded <- c("id","from","to","trans","Tstop","status","time",
+        excluded <- c("id","from","to","trans","Tstop","status","time","data_source",
                       states(), paste0(states(), ".s"))
         filter_cov <- setdiff(all_vars, excluded)
-        sel_cov <- if (length(sel_cov) == 0) filter_cov else sel_cov
+        # Start each covariate selector with no covariates selected by default.
+        # If the user later makes a selection, preserve only those selected values on re-render.
+        sel_cov <- intersect(sel_cov, filter_cov)
+        selected_covariates <- if (length(sel_cov) == 0) character(0) else sel_cov
         covUI <- selectizeInput(
           paste0("covars_block_", i), "Select covariates",
-          choices = filter_cov, selected = sel_cov, multiple = TRUE,
+          choices = filter_cov, selected = selected_covariates, multiple = TRUE,
           options = list(closeAfterSelect = FALSE, openOnFocus = TRUE)
         )
       } else {
@@ -1461,7 +1664,12 @@ server <- function(input, output, session){
         if (nrow(df_tr) == 0) next
         
         assign_covs <- unlist(savedCovs()[sapply(savedTrns(), function(x) tr %in% x)])
-        formula_str <- paste("Surv(time, status) ~", paste0(assign_covs, collapse = " + "))
+        assign_covs <- assign_covs[nzchar(assign_covs)]
+        if (length(assign_covs) == 0) {
+          formula_str <- "Surv(time, status) ~ 1"
+        } else {
+          formula_str <- paste("Surv(time, status) ~", paste(assign_covs, collapse = " + "))
+        }
         f <- as.formula(formula_str)
         
         # Branch by model type
@@ -1901,30 +2109,30 @@ server <- function(input, output, session){
       cov_box <-  div(
         class = "pdf-block",
         wellPanel(
-        style = "background-color: transparent; border: 1px solid #dee2e6; padding: 15px; border-radius: 8px;",
-        h5(strong(paste("Hazard Ratios of", cov_label))),
-        fluidRow(
-          column(
-            width = 3,
-            tagList(lapply(trns_sorted, function(tr) {
-              numericInput(
-                inputId = paste0("HR_", cov, "_", tr),
-                label   = tr_labels()[tr],
-                value   = round(default_HRs[tr], 3),
-                min     = 0,
-                step    = 0.1, width = "120px"
+          style = "background-color: transparent; border: 1px solid #dee2e6; padding: 15px; border-radius: 8px;",
+          h5(strong(paste("Hazard Ratios of", cov_label))),
+          fluidRow(
+            column(
+              width = 3,
+              tagList(lapply(trns_sorted, function(tr) {
+                numericInput(
+                  inputId = paste0("HR_", cov, "_", tr),
+                  label   = tr_labels()[tr],
+                  value   = round(default_HRs[tr], 3),
+                  min     = 0,
+                  step    = 0.1, width = "120px"
+                )
+              }))
+            ),
+            column(
+              width = 9,
+              plotOutput(
+                paste0("hr_plot_", cov),
+                height = paste0(80 * length(trns_sorted), "px")
               )
-            }))
-          ),
-          column(
-            width = 9,
-            plotOutput(
-              paste0("hr_plot_", cov),
-              height = paste0(80 * length(trns_sorted), "px")
             )
           )
-        )
-      ))
+        ))
       
       ui_list[[length(ui_list)+1]] <- cov_box
       
@@ -2132,25 +2340,25 @@ server <- function(input, output, session){
           ui_list[[length(ui_list) + 1]] <<- div(
             class = "pdf-block",
             fluidRow(
-            column(
-              width = 4,
-              h5(strong(paste("Transition", tr_labels()[tr_local]))),
-              if (input$has_data == "no") {
-                tagList(
-                  numericInput(paste0("n_intervals_", tr_local),
-                               "Number of intervals:",
-                               value = length(default_haz),
-                               min = 1, step = 1))
-              } else {
-                tagList(
-                  paste0("The number of intervals is ", length(default_haz), "."),
-                  br())
-              },
-              uiOutput(paste0("interval_inputs_", tr_local))
-            ),
-            column(width = 8, plotOutput(paste0("piecewise_plot_", tr_local), height = "300px")),
-            tags$div(style = "height:30px;")
-          ))
+              column(
+                width = 4,
+                h5(strong(paste("Transition", tr_labels()[tr_local]))),
+                if (input$has_data == "no") {
+                  tagList(
+                    numericInput(paste0("n_intervals_", tr_local),
+                                 "Number of intervals:",
+                                 value = length(default_haz),
+                                 min = 1, step = 1))
+                } else {
+                  tagList(
+                    paste0("The number of intervals is ", length(default_haz), "."),
+                    br())
+                },
+                uiOutput(paste0("interval_inputs_", tr_local))
+              ),
+              column(width = 8, plotOutput(paste0("piecewise_plot_", tr_local), height = "300px")),
+              tags$div(style = "height:30px;")
+            ))
           
           # Dynamic inputs
           output[[paste0("interval_inputs_", tr_local)]] <- renderUI({
@@ -2337,18 +2545,18 @@ server <- function(input, output, session){
           ui_list[[length(ui_list) + 1]] <<- div(
             class = "pdf-block",
             fluidRow(
-            column(
-              width = 4,
-              h5(strong(paste("Transition", tr_labels()[tr_local]))),
-              fluidRow(
-                column(width = 6, h5("Gammas"), gamma_inputs),
-                column(width = 6, h5("Knots"),  knot_inputs)
+              column(
+                width = 4,
+                h5(strong(paste("Transition", tr_labels()[tr_local]))),
+                fluidRow(
+                  column(width = 6, h5("Gammas"), gamma_inputs),
+                  column(width = 6, h5("Knots"),  knot_inputs)
+                ),
+                if (!is.null(add_btn)) div(style = "margin-top:10px;", add_btn)
               ),
-              if (!is.null(add_btn)) div(style = "margin-top:10px;", add_btn)
-            ),
-            column(width = 8, plotOutput(paste0("spline_plot_", tr_local), height = "300px")),
-            tags$div(style = "height:30px;")
-          ))
+              column(width = 8, plotOutput(paste0("spline_plot_", tr_local), height = "300px")),
+              tags$div(style = "height:30px;")
+            ))
           
           # Reactive inputs for plotting 
           gamma_vals_re <- reactive({
@@ -2611,7 +2819,8 @@ server <- function(input, output, session){
     if (length(savedCovs()) == 0)
       return(h5("No covariates defined yet. Please fit the model first."))
     
-    covariates <- unique(unlist(savedCovs()))
+    data_source_dummy_vars <- rv2_1$dataSourceDummyVars() %||% character(0)
+    covariates <- setdiff(unique(unlist(savedCovs())), data_source_dummy_vars)
     covariates <- unique(c("Tstart", "StartState", covariates))
     
     # Build user-defined labels 
@@ -2651,6 +2860,7 @@ server <- function(input, output, session){
         helpText("An error bar indicates the 95% confidence interval.")
       },
       helpText("The no-treatment strategy is defined as the continuation of the current care path without incorporating the treatment under consideration."),
+      uiOutput("dataSourceTreatmentStatement"),
       uiOutput("transitionCovariateInputs"),
       br(),
       div(
@@ -2678,11 +2888,24 @@ server <- function(input, output, session){
     }
   })
   
+  output$dataSourceTreatmentStatement <- renderUI({
+    data_source_dummy_vars <- rv2_1$dataSourceDummyVars() %||% character(0)
+    if (length(data_source_dummy_vars) == 0) return(NULL)
+    source_map <- rv2_1$sourceDataByTrans() %||% list()
+    source_dataset <- source_map[["source"]] %||% "the selected source/main dataset"
+    div(
+      style = "margin-top: 10px; margin-bottom: 10px; padding: 10px; border-left: 4px solid #2b7bba; background-color: #f9f9f9;",
+      strong("Data-source setting for treatment-strategy prediction:"),
+      p(paste0("The source/main dataset is ", source_dataset, ". All data_source dummy variables are automatically set to 0, so the microsimulation prediction uses the source/main dataset as the reference level rather than an auxiliary dataset."))
+    )
+  })
+  
   output$covariateValueInputs <- renderUI({
     req(input$goToMicrosimulation)
     
     cov_labels <- rv3$covLabelsRV() %||% list()
-    covariates <- unique(unlist(savedCovs()))
+    data_source_dummy_vars <- rv2_1$dataSourceDummyVars() %||% character(0)
+    covariates <- setdiff(unique(unlist(savedCovs())), data_source_dummy_vars)
     covariates <- unique(c("Tstart", "StartState", covariates))
     
     shared_covs <- input$shared_covs %||% character(0)
@@ -2724,7 +2947,8 @@ server <- function(input, output, session){
     
     start_states <-  unique(edges()[edges()$label %in% tx_trans(),"from" ])
     
-    covariates <- unique(unlist(savedCovs()))
+    data_source_dummy_vars <- rv2_1$dataSourceDummyVars() %||% character(0)
+    covariates <- setdiff(unique(unlist(savedCovs())), data_source_dummy_vars)
     
     shared_covs <- input$shared_covs %||% character(0)
     non_shared_covs <- setdiff(unique(c("Tstart", "StartState", covariates)), shared_covs)
@@ -2773,36 +2997,36 @@ server <- function(input, output, session){
           width = 12,
           div(
             class = "pdf-block",
-          wellPanel(
-            style = "background-color:#ffffff; border:1px solid #dee2e6; border-radius:8px; padding:18px; margin-bottom:25px;",
-            
-            h5(strong(tr_label)),
-            
-            fluidRow(
-              column(
-                width = 4,   # left 1/3: covariate inputs
-                h5("Covariate values"),
-                tagList(inputs),
-                div(
-                  style = "text-align:center; margin-top:10px;",
-                  actionButton(
-                    paste0("run_tr_", tr),
-                    "Run microsimulation",
-                    class = "btn btn-primary no-pdf"
+            wellPanel(
+              style = "background-color:#ffffff; border:1px solid #dee2e6; border-radius:8px; padding:18px; margin-bottom:25px;",
+              
+              h5(strong(tr_label)),
+              
+              fluidRow(
+                column(
+                  width = 4,   # left 1/3: covariate inputs
+                  h5("Covariate values"),
+                  tagList(inputs),
+                  div(
+                    style = "text-align:center; margin-top:10px;",
+                    actionButton(
+                      paste0("run_tr_", tr),
+                      "Run microsimulation",
+                      class = "btn btn-primary no-pdf"
+                    )
+                  )
+                ),
+                
+                column(
+                  width = 8,   # right 2/3: plot
+                  h5("Treatment strategy outcomes"),
+                  plotOutput(
+                    paste0("microsimPlot_", tr),
+                    height = "250px"
                   )
                 )
-              ),
-              
-              column(
-                width = 8,   # right 2/3: plot
-                h5("Treatment strategy outcomes"),
-                plotOutput(
-                  paste0("microsimPlot_", tr),
-                  height = "250px"
-                )
               )
-            )
-          ))
+            ))
         )
       })
       fluidRow(cols)
@@ -2837,6 +3061,13 @@ server <- function(input, output, session){
       names(non_shared_vals) <- non_shared_covs
       
       cov_values <- c(shared_vals, non_shared_vals)
+      
+      data_source_dummy_vars <- rv2_1$dataSourceDummyVars() %||% character(0)
+      if (length(data_source_dummy_vars) > 0) {
+        data_source_vals <- as.list(rep(0, length(data_source_dummy_vars)))
+        names(data_source_vals) <- data_source_dummy_vars
+        cov_values <- c(cov_values, data_source_vals)
+      }
       
       # Convert StartState to numeric 
       if ("StartState" %in% names(cov_values)) {
@@ -3077,6 +3308,10 @@ server <- function(input, output, session){
       if (length(v) == 1L && (is.numeric(v) || suppressWarnings(!is.na(as.numeric(v))))) {
         sim_data[[nm]] <- suppressWarnings(as.numeric(v))
       }
+    }
+    data_source_dummy_vars <- rv2_1$dataSourceDummyVars() %||% character(0)
+    for (nm in data_source_dummy_vars) {
+      sim_data[[nm]] <- 0
     }
     
     tstart_yes <- suppressWarnings(as.numeric(cov_vals[["Tstart"]]))
@@ -3569,10 +3804,23 @@ server <- function(input, output, session){
     rv2_1$firstTransformed <- NULL
     rv2_1$extraList <- list()
     rv2_1$combined(NULL)
+    rv2_1$datasetNames(character(0))
+    rv2_1$datasetFileNames(character(0))
+    rv2_1$sourceDataByTrans(list())
+    rv2_1$dataSourceDummyVars(character(0))
+    rv2_1$lastExtraTransitions(character(0))
+    rv2_1$showAddDataPanel(FALSE)
     
     shinyjs::reset("dataFile")
     shinyjs::reset("extraDataFile")
+    shinyjs::reset("transitionSelect_first")
     shinyjs::reset("transitionSelect")
+    shinyjs::reset("source_data_global")
+    shinyjs::reset("datasetName_first")
+    shinyjs::reset("datasetName_extra")
+
+    updateCheckboxGroupInput(session, "transitionSelect_first", selected = character(0))
+    updateCheckboxGroupInput(session, "transitionSelect", selected = character(0))
     
     output$uploadedDataDT        <- renderDT(NULL)
     output$msdataTitle           <- renderUI(NULL)
@@ -3585,6 +3833,7 @@ server <- function(input, output, session){
     output$combinedCountTitle    <- renderUI(NULL)
     output$combinedCountDT       <- renderDT(NULL)
     output$addSectionUI          <- renderUI(NULL)
+    output$sourceDataQuestionUI  <- renderUI(NULL)
   }
   
   # tab 2-2: covariate
