@@ -2859,7 +2859,7 @@ server <- function(input, output, session){
       }else if (input$has_data=="yes"){
         helpText("An error bar indicates the 95% confidence interval.")
       },
-      helpText("The no-treatment strategy is defined as the continuation of the current care path without incorporating the treatment under consideration."),
+      helpText("The no-treatment strategy is defined as the continuation of the current care path without incorporating the treatment of interest."),
       uiOutput("dataSourceTreatmentStatement"),
       uiOutput("transitionCovariateInputs"),
       br(),
